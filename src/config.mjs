@@ -123,8 +123,16 @@ export const DEFAULT_WORKFLOW_TIMEOUT_MS = 60 * 60 * 1000;
 /** Upper bound a caller may request for one dsh_delegate deadline. */
 export const MAX_WORKFLOW_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 
-/** Deadline for the single planning worker inside a parent workflow. */
-export const DEFAULT_PLANNING_TIMEOUT_MS = 20 * 60 * 1000;
+/**
+ * Deadline for the single planning worker inside a parent workflow.
+ *
+ * Planning reads before it writes anything, so it is the slowest phase on a
+ * large objective — and its timeout is total loss, because a workflow that
+ * never produced a plan never dispatched a worker. Measured on 2026-09-20/21:
+ * six of fourteen failed workflows ended exactly at the previous 20-minute
+ * ceiling, having produced nothing.
+ */
+export const DEFAULT_PLANNING_TIMEOUT_MS = 40 * 60 * 1000;
 
 /** Characters of a finished worker's answer kept as downstream context. */
 export const MAX_DEPENDENCY_CONTEXT_CHARS = 4_000;

@@ -149,9 +149,13 @@ try {
   assert.equal(isWithin("src", "src/a"), false, "a parent of the scope is NOT inside it");
   assert.equal(isWithin("src/a", "."), true, "the root scope contains everything");
 
-  // Declared paths outside the scope are rejected.
+  // Writes outside the scope are rejected; reads are bounded by the cwd instead,
+  // because a planner has to look at a definition before it can scope the task
+  // that touches it.
   rejects([base({ write_paths: ["docs/x.md"] })], /outside allowed_paths/, "workspace-write", ["src"]);
-  rejects([base({ read_paths: ["docs"] })], /outside allowed_paths/, "workspace-write", ["src"]);
+  const wideRead = validate([base({ read_paths: ["docs"] })], "workspace-write", ["src"]);
+  assert.deepEqual(wideRead.tasks[0].read_paths, ["docs"], "a read outside the write scope is allowed");
+  rejects([base({ read_paths: ["../outside"] })], /escapes the workflow cwd/, "workspace-write", ["src"]);
   // The allowed=['src/a'] vs declared 'src' case is the reason containment is
   // one-directional: a symmetric overlap would wrongly admit it.
   rejects([base({ write_paths: ["src"] })], /outside allowed_paths/, "workspace-write", ["src/a"]);
@@ -159,7 +163,19 @@ try {
   const scoped = validate([base({ write_paths: ["src/a/new.js"] })], "workspace-write", ["src/a"]);
   assert.deepEqual(scoped.allowed_paths, ["src/a"]);
   assert.deepEqual(scoped.tasks[0].write_paths, ["src/a/new.js"]);
-  console.log("ok - allowed_paths is enforced one-directionally (declared must sit inside)");
+  console.log("ok - writes stay inside allowed_paths while reads are bounded by the cwd");
+
+  // --- credential files are refused on both sides ---------------------------
+  // Reads are no longer confined to the caller's grant, so the names that would
+  // hand a worker a secret are refused outright.
+  for (const secret of [".env", ".env.secrets", "config/app.pem", "deploy/id_rsa", "credentials"]) {
+    rejects([base({ read_paths: [secret] })], /credential file/, "workspace-write", ["."]);
+    rejects([base({ write_paths: [secret] })], /credential file/, "workspace-write", ["."]);
+  }
+  // Templates carry no real values, so they stay usable.
+  const example = validate([base({ read_paths: [".env.example"] })], "workspace-write", ["."]);
+  assert.deepEqual(example.tasks[0].read_paths, [".env.example"], "an example env file is not a credential");
+  console.log("ok - credential files are refused in reads and writes alike");
 
   // --- allowed scope is canonical, not just lexical -------------------------
   // The scope is a grant over files, not over names. `allowed/alias` is inside
@@ -175,20 +191,11 @@ try {
     "workspace-write",
     ["allowed"],
   );
-  rejects(
-    [base({ read_paths: ["allowed/alias/x"] })],
-    /canonical target .* is outside allowed_paths/,
-    "workspace-write",
-    ["allowed"],
-  );
-  // Naming the alias itself is refused too: reading it reads other/. Refusing is
-  // the fail-closed direction, since the grant covers `allowed`, not its target.
-  rejects(
-    [base({ read_paths: ["allowed/alias"] })],
-    /canonical target .* is outside allowed_paths/,
-    "workspace-write",
-    ["allowed"],
-  );
+  // The same alias on the read side resolves to other/, which is inside the cwd,
+  // so it is allowed: reads are bounded by the working directory, not by the
+  // write grant. Containment in the cwd is still proven, symlink and all.
+  const aliasRead = validate([base({ read_paths: ["allowed/alias/x"] })], "workspace-write", ["allowed"]);
+  assert.deepEqual(aliasRead.tasks[0].read_paths, ["allowed/alias/x"], "a read through an internal alias is allowed");
   rejects(
     [base({ write_paths: ["allowed/alias"] })],
     /canonical target .* is outside allowed_paths/,

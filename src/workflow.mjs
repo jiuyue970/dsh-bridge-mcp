@@ -311,7 +311,9 @@ function planningPrompt(request) {
     request.allowed_paths.length > 0
       ? request.allowed_paths.map((path) => `- ${path}`).join("\n")
       : "- . (the whole working directory)",
-    "Every path you declare must be relative to the working directory and inside the allowed paths above.",
+    "write_paths must stay inside the allowed paths above. read_paths may name anything inside the working directory,",
+    "so declare every file a worker genuinely needs to read rather than trimming the list to fit the write scope.",
+    "No path, read or write, may name a credential file such as .env, .env.secrets, a private key, or credentials.",
     "",
     "## Hard rules",
     "- Investigate the codebase read-only. Do not modify, create, or delete any file.",
@@ -322,7 +324,10 @@ function planningPrompt(request) {
     "- Declare read_paths and write_paths per task. Two tasks that might run at the same time must not declare overlapping paths unless both only read them.",
     "",
     "## Output",
-    "Your final message must be a single JSON object and nothing else:",
+    "Your entire final message must be one JSON object and nothing else. Start it with { and end it with }.",
+    "No greeting, no explanation, no summary, no markdown fence, no text before or after. A single stray word",
+    "invalidates the whole plan and the work you just did is discarded. Keep task text concise so the object",
+    "is complete and well-formed; a truncated object is rejected exactly like a malformed one.",
     "{",
     '  "tasks": [',
     "    {",
@@ -335,7 +340,7 @@ function planningPrompt(request) {
     "    }",
     "  ]",
     "}",
-    "Emit no prose outside the JSON object.",
+    "Emit no prose outside the JSON object. Re-read your final message before sending: it must parse as JSON on its own.",
   ].join("\n");
 }
 

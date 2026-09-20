@@ -29,6 +29,29 @@ const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 /** Directories that are never a legitimate delegation target. */
 const FORBIDDEN_SEGMENTS = new Set([".git", "node_modules"]);
 
+/**
+ * Filenames a plan may never declare, in reads or writes.
+ *
+ * Task reads are validated against the project root rather than the caller's
+ * allowed paths (see validatePlan), so the narrow scope no longer keeps a plan
+ * away from a project's secrets. These names close that gap. Example and
+ * sample files are deliberately allowed: they carry no real values.
+ *
+ * This constrains what a plan may DECLARE. A worker has its own shell, so this
+ * is not an OS sandbox and does not stop one from reading a file it never
+ * declared; it keeps the bridge from routing a task at secrets on purpose.
+ */
+const CREDENTIAL_FILE_PATTERN =
+  /^(\.env(\..+)?|.*\.(pem|key|p12|pfx|keystore)|id_(rsa|ed25519|ecdsa)|credentials|\.netrc|\.npmrc|\.pypirc)$/i;
+
+/** Example and template files carry no real values, so they stay readable. */
+const CREDENTIAL_FILE_EXCEPTIONS = /^\.env\.(example|sample|template|dist)$/i;
+
+function isCredentialFile(segment) {
+  if (CREDENTIAL_FILE_EXCEPTIONS.test(segment)) return false;
+  return CREDENTIAL_FILE_PATTERN.test(segment);
+}
+
 export class PlanError extends Error {
   constructor(message, detail) {
     super(message);
@@ -85,6 +108,9 @@ function normaliseRelativePath(value, label) {
   for (const segment of segments) {
     if (FORBIDDEN_SEGMENTS.has(segment)) {
       throw new PlanError(`${label} targets protected directory "${segment}": "${raw}"`);
+    }
+    if (isCredentialFile(segment)) {
+      throw new PlanError(`${label} targets a credential file "${segment}": "${raw}"`);
     }
   }
   return segments.join("/");
@@ -410,20 +436,18 @@ export function validatePlan(raw, { cwd, mode, allowedPaths, cwdCanonical }) {
 
     // Scope is enforced before the filesystem is consulted, so an out-of-scope
     // path is reported as such rather than as a symlink problem.
-    for (const [kind, declared] of [
-      ["read_paths", readPaths],
-      ["write_paths", writePaths],
-    ]) {
-      if (kind === "read_paths" && mode === "read-only" && readPaths.length === 1 && readPaths[0] === ".") {
-        // The implicit "." for a read-only task with no declared reads is a
-        // convenience default; it still has to fit the caller's scope.
-      }
-      for (const value of declared) {
-        if (!withinAllowedScope(value, scope)) {
-          throw new PlanError(
-            `${at} ("${id}").${kind} declares "${value}", which is outside allowed_paths (${scope.join(", ")})`,
-          );
-        }
+    // Writes are what change a project, so they stay inside the caller's grant.
+    // Reads are bounded by the working directory instead: a planner has to look
+    // at a definition before it can scope the task that touches it, and a scope
+    // narrow enough to be useful for writes was rejecting those reads outright.
+    // Measured on 2026-09-20/21, four of fourteen failed workflows died this
+    // way, having produced nothing. Credential files stay refused on both
+    // sides, and containment inside cwd is still proven below.
+    for (const value of writePaths) {
+      if (!withinAllowedScope(value, scope)) {
+        throw new PlanError(
+          `${at} ("${id}").write_paths declares "${value}", which is outside allowed_paths (${scope.join(", ")})`,
+        );
       }
     }
 
@@ -456,21 +480,16 @@ export function validatePlan(raw, { cwd, mode, allowedPaths, cwdCanonical }) {
     // one-directionally inside an allowed path's canonical target. A symlink
     // *inside* the allowed subtree that points out of it is caught here, and a
     // narrower lexical grant is never widened (both layers must pass).
-    for (const [kind, declared, canonical] of [
-      ["read_paths", readPaths, readCanonical],
-      ["write_paths", writePaths, writeCanonical],
-    ]) {
-      declared.forEach((value, position) => {
-        const target = canonical[position];
-        const inside = allowedScopes.some((allowed) => resolvedPathsOverlap(target, allowed.canonical));
-        if (!inside) {
-          throw new PlanError(
-            `${at} ("${id}").${kind} declares "${value}", whose canonical target ${target} is outside ` +
-              `allowed_paths (${scope.join(", ")}); an allowed path is a grant over its own files, not over whatever its symlinks reach`,
-          );
-        }
-      });
-    }
+    writePaths.forEach((value, position) => {
+      const target = writeCanonical[position];
+      const inside = allowedScopes.some((allowed) => resolvedPathsOverlap(target, allowed.canonical));
+      if (!inside) {
+        throw new PlanError(
+          `${at} ("${id}").write_paths declares "${value}", whose canonical target ${target} is outside ` +
+            `allowed_paths (${scope.join(", ")}); an allowed path is a grant over its own files, not over whatever its symlinks reach`,
+        );
+      }
+    });
 
     const acceptance = normaliseAcceptance(entry.acceptance, `${at} ("${id}")`);
 
