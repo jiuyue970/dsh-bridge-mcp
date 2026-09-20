@@ -1,0 +1,21 @@
+{
+  "name": "dsh-bridge-mcp",
+  "version": "0.1.0",
+  "description": "MCP server that lets Codex delegate coding tasks to DeepSeek Harness (DSH) headless workers.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "dsh-bridge-mcp": "bin/dsh-bridge-mcp.mjs"
+  },
+  "engines": {
+    "node": ">=20.12.0"
+  },
+  "scripts": {
+    "test": "node tests/plan.mjs && node tests/stdio.mjs && node tests/choices.mjs && node tests/cancel.mjs && node tests/workflow.mjs && node tests/snapshot.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@typesafe-ai/sdk": "0.6.0",
+    "zod": "^3.25.76"
+  }
+}

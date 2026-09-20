@@ -1,0 +1,137 @@
+# Third-party notices
+
+`dsh-bridge-mcp` is distributed under the MIT License (see [LICENSE](LICENSE)).
+
+The packages listed below are **not** bundled with this project. They are
+declared in `package.json` and installed by the user with `npm install`, so no
+third-party source is redistributed here. This file records the licences of the
+direct dependencies and notes the transitive distribution, so that anyone
+repackaging an installed tree knows what they are carrying.
+
+Every licence identifier, version and copyright line below was read from the
+installed packages' own `package.json` and `LICENSE` files, not assumed.
+
+## Direct dependencies
+
+### `@modelcontextprotocol/sdk` — MIT
+
+- Version: 1.30.0
+- License: MIT
+- Copyright (c) 2024 Anthropic, PBC
+- Upstream: <https://github.com/modelcontextprotocol/typescript-sdk>
+- Notice reproduced verbatim from the installed
+  `node_modules/@modelcontextprotocol/sdk/LICENSE`:
+
+```
+MIT License
+
+Copyright (c) 2024 Anthropic, PBC
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### `zod` — MIT
+
+- Version: 3.25.76
+- License: MIT
+- Copyright (c) 2025 Colin McDonnell
+- Upstream: <https://github.com/colinhacks/zod>
+- Notice reproduced verbatim from the installed `node_modules/zod/LICENSE`:
+
+```
+MIT License
+
+Copyright (c) 2025 Colin McDonnell
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### `@typesafe-ai/sdk` — MIT
+
+- Version: 0.6.0
+- License: MIT
+- Copyright (c) 2026 TypeSafe
+- Upstream: <https://github.com/typesafe-ai/typesafe-sdk-js>
+- Docs: <https://docs.typesafe.ai/sdk/javascript>
+- Notice reproduced verbatim from the installed
+  `node_modules/@typesafe-ai/sdk/LICENSE`:
+
+```
+MIT License
+
+Copyright (c) 2026 TypeSafe
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+## Transitive dependencies
+
+`package-lock.json` pins the full install tree. Each of those packages carries
+its own licence and copyright notice inside its own tarball; npm installs them,
+and they are not shipped here. Counts as resolved by this project's lockfile:
+
+| License | Packages |
+|---|---|
+| MIT | 85 |
+| ISC | 7 |
+| BSD-3-Clause | 2 (`fast-uri`, `qs`) |
+| BSD-2-Clause | 1 (`json-schema-typed`) |
+
+If you redistribute an installed `node_modules` tree, reproduce the licence text
+that each package ships in its own directory.
+
+## Inspiration
+
+The tool shape and the approach of wrapping a coding CLI in an MCP server were
+inspired by
+[`deepseek-claude-code-worker-mcp`](https://github.com/louchi1984-coder/deepseek-claude-code-worker-mcp)
+(MIT), which does the same job for Claude Code. No code was copied from it; it
+is credited here as prior art.

@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Environment and secrets — never commit these
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Logs and runtime state
+logs/
+*.log
+npm-debug.log*
+
+# Editor / OS
+.DS_Store
+._*
+.idea/
+.vscode/
+*.swp
+
+# Isolated public release candidate — built output, never committed here
+.public-release/
