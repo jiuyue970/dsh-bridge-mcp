@@ -184,3 +184,35 @@ without double-counting.
   filesystem access is governed by its DSH profile, not by this bridge.
 - **No cross-process workflow management.** Only the process that started a
   workflow can wait on or cancel it.
+
+## Round trips and retention
+
+The caller's cost is dominated by how often it asks, not by what DSH does. A
+poll is a full request carrying the caller's whole conversation, so the tool
+surface is shaped to reduce the number of asks:
+
+- `dsh_start` accepts `wait_for_ms` and returns a finished job inline, removing
+  the start-then-poll pair for short work. The window is capped so a long job
+  becomes a background job quickly.
+- `dsh_wait` defaults to a 300000 ms window. It still returns the instant a job
+  settles, so a long window costs nothing when work finishes early.
+- `dsh_wait_any` watches a set and returns on the first finisher, or on the last
+  one with `wait_for: "all"`. Parallel dispatch is the bridge's purpose, and a
+  per-job wait would reintroduce one polling chain per job.
+- `tier` maps a task shape to a deadline. A single flat timeout misfits both a
+  question and a build; the tiers are `investigate`, `edit`, and `build`.
+
+`waitJob` in `jobs.mjs` is the single polling implementation behind both
+`dsh_wait` and the inline wait, so the settled-check cannot drift between them.
+
+`statusOf` bounds the answer it returns. `MAX_OUTPUT_CHARS` caps what the bridge
+retains; `MAX_ANSWER_CHARS` caps what it hands back, because a tool result is
+re-sent with every later request in the caller's conversation. An oversized
+answer is trimmed, labelled with its true length and omitted count, and
+accompanied by the snapshot path that holds it whole; `include_logs` returns it
+whole. The workflow reader already had this budget, so the two paths now agree.
+
+`dsh_prune` reports reclaimable state and deletes only under `apply: true`.
+Eligibility requires a settled job whose `ended_at` is older than the cutoff and
+which is not still running in this process; a workflow's artifact directory goes
+with its snapshot, which is why the deletion is opt-in rather than automatic.

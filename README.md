@@ -61,9 +61,11 @@ codex mcp list | grep dsh-bridge
 | `dsh_start` | Delegate one task; returns a `job_id` immediately |
 | `dsh_get` | Compact status + final answer (worker job **or** workflow) |
 | `dsh_wait` | Block until settled, bounded window |
+| `dsh_wait_any` | Watch several jobs with one call; return on the first finisher |
 | `dsh_tail` | Output tail for debugging |
 | `dsh_cancel` | Stop a running job or a whole workflow |
 | `dsh_list` | List known jobs and workflows |
+| `dsh_prune` | Report, and optionally delete, finished bridge state |
 
 ### `dsh_delegate` — the managed workflow
 
@@ -95,18 +97,52 @@ is correct.
 ### Typical flow
 
 ```
-dsh_start(task="Add input validation to src/api.ts and run the tests", cwd="/repo")
-  -> { job_id: "..." }
-dsh_wait(job_id="...", max_wait_ms=60000)
-  -> { status: "done", answer: "..." }
+dsh_start(task="Add input validation to src/api.ts and run the tests",
+          cwd="/repo", wait_for_ms=5000, tier="edit")
+  -> { status: "done", answer: "...", returned_inline: true }
 
-dsh_delegate(task="...", cwd="/repo", mode="workspace-write")
+dsh_delegate(task="...", cwd="/repo", mode="workspace-write", tier="build")
   -> { job_id: "..." }
-dsh_wait(job_id="...", max_wait_ms=60000)
+dsh_wait(job_id="...", max_wait_ms=300000)
   -> { status: "awaiting_review", counts: {...}, children: [...] }
 ```
 
-Wait in bounded windows of at most 60000 ms and re-issue until the job settles.
+### Keeping the round trips down
+
+Every poll is a full request from the calling agent, carrying its whole
+conversation, so polling — not the delegated work — tends to dominate the
+caller's token cost. Three parameters exist for that reason:
+
+- **`wait_for_ms` on `dsh_start`** holds the call open briefly and returns the
+  finished result inline. Short jobs are the common case, and this collapses the
+  usual start-then-poll pair into one round trip.
+- **`max_wait_ms` on `dsh_wait`** defaults to 300000. Prefer one long window over
+  several short ones; the call still returns the moment the job settles.
+- **`dsh_wait_any`** watches a whole parallel set with one call. Without it, N
+  parallel jobs cost N polling chains to learn the same thing.
+
+**`tier`** picks a deadline by task shape — `investigate` (5m), `edit` (15m),
+`build` (30m) for a worker, and 20m / 1h / 2h for a whole workflow — instead of
+one flat timeout that is simultaneously too long for a question and too short for
+a build. An explicit `timeout_ms` always wins.
+
+### Bounded answers
+
+A tool result enters the caller's conversation and is re-sent with every later
+request, so a worker's answer is trimmed to 12000 characters by default. The
+reply then carries `answer_truncated`, the true `answer_chars`, the
+`answer_omitted` count, and `answer_path` — the job snapshot holding the whole
+text. Nothing is lost: `include_logs=true` returns the answer in full. This
+matches the budget the workflow reader already applied, so both paths behave the
+same way.
+
+### Reclaiming disk
+
+Every delegation leaves a snapshot, and a workflow also leaves an artifact
+directory, because evidence has to outlive the controller for acceptance to be
+possible. `dsh_prune` reports what is reclaimable and deletes only when you pass
+`apply=true`; jobs still running are never candidates, and it touches only this
+bridge's own state — never a project's files, and never DSH's session history.
 
 -----
 

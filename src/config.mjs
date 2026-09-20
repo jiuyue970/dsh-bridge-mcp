@@ -28,8 +28,69 @@ export const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
 /** Upper bound a caller may request for one foreground wait window. */
 export const MAX_FOREGROUND_WAIT_CAP_MS = 10 * 60 * 1000;
 
+/**
+ * Default window for `dsh_wait`.
+ *
+ * Every poll is a full round trip that re-sends the caller's whole
+ * conversation, so a short window is the dominant cost of delegation, not a
+ * safety feature. Measured on 2026-09-20: 45-second windows produced 2,250
+ * idle polls across 2,997 jobs, and `dsh_wait` accounted for 67.5% of the
+ * caller's token usage. A 300-second window removes about 89% of those idle
+ * polls while still returning the moment a job settles.
+ */
+export const DEFAULT_WAIT_WINDOW_MS = 5 * 60 * 1000;
+
+/**
+ * How long `dsh_start` may hold the call open before handing back a job id.
+ *
+ * Most delegated jobs are short: on 2026-09-20 the 90th percentile finished in
+ * about two seconds. Returning such a job's answer inline collapses the usual
+ * start-then-poll pair into one round trip. The cap is deliberately small so a
+ * long job still becomes a background job quickly.
+ */
+export const MAX_INLINE_WAIT_MS = 60 * 1000;
+
+/**
+ * Named deadlines, so a caller picks a shape instead of guessing milliseconds.
+ *
+ * A single flat timeout misfits both ends: read-only questions finish in
+ * seconds yet reserved half an hour, while long builds hit the wall and lose
+ * partially applied work. Measured on 2026-09-19/20, 18.2% of delegated jobs
+ * timed out against a 90th percentile runtime of about 15 minutes.
+ */
+export const TIMEOUT_TIERS = {
+  investigate: 5 * 60 * 1000,
+  edit: 15 * 60 * 1000,
+  build: 30 * 60 * 1000,
+};
+
+/** Workflow-level equivalents: planning plus every task in one deadline. */
+export const WORKFLOW_TIMEOUT_TIERS = {
+  investigate: 20 * 60 * 1000,
+  edit: 60 * 60 * 1000,
+  build: 2 * 60 * 60 * 1000,
+};
+
+/** Most jobs a single `dsh_wait_any` call may watch at once. */
+export const MAX_WAIT_ANY_JOBS = 32;
+
+/** Default age threshold for `dsh_prune`. */
+export const DEFAULT_PRUNE_AGE_DAYS = 7;
+
 /** Cap retained stdout per job, so one huge answer cannot exhaust memory. */
 export const MAX_OUTPUT_CHARS = 200_000;
+
+/**
+ * Characters of a worker's answer returned by default.
+ *
+ * `MAX_OUTPUT_CHARS` bounds what the bridge keeps; this bounds what it hands
+ * back. They are different jobs: a tool result enters the caller's
+ * conversation and is re-sent with every later request, so one talkative
+ * worker would otherwise charge the caller for its whole report over and over.
+ * The full text stays in the job snapshot, and `include_logs` returns it whole.
+ * Matches the workflow reader's budget so both paths behave the same way.
+ */
+export const MAX_ANSWER_CHARS = 12_000;
 
 /** How much of the tail to return when a caller asks for the last output. */
 export const DEFAULT_TAIL_CHARS = 4_000;

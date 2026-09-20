@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import {
   DEFAULT_PLANNING_TIMEOUT_MS,
@@ -185,6 +185,74 @@ export function readWorkflow(workflowId) {
 }
 
 /** List persisted workflows newest-first, without touching worker snapshots. */
+/**
+ * Remove finished workflow snapshots and their artifact directories.
+ *
+ * A workflow keeps its evidence on disk so acceptance can happen after the
+ * controller is gone, which is exactly why this is opt-in: the caller must ask
+ * for the deletion, and a workflow still live in this process is never a
+ * candidate no matter how old its snapshot looks.
+ */
+export function pruneWorkflowState({ olderThanMs, apply = false, now = Date.now() } = {}) {
+  const cutoff = now - olderThanMs;
+  const removable = [];
+  let kept = 0;
+  let bytes = 0;
+  const dirBytes = (dir) => {
+    let total = 0;
+    try {
+      for (const name of readdirSync(dir)) {
+        try {
+          total += statSync(join(dir, name)).size;
+        } catch {
+          // A vanished file contributes nothing.
+        }
+      }
+    } catch {
+      // No artifact directory for this workflow.
+    }
+    return total;
+  };
+  try {
+    mkdirSync(WORKFLOW_ROOT, { recursive: true });
+    for (const name of readdirSync(WORKFLOW_ROOT)) {
+      if (!name.endsWith(".json")) continue;
+      const path = join(WORKFLOW_ROOT, name);
+      let snap;
+      let size = 0;
+      try {
+        size = statSync(path).size;
+        snap = JSON.parse(readFileSync(path, "utf8"));
+      } catch {
+        continue;
+      }
+      const ended = snap.ended_at ? Date.parse(snap.ended_at) : NaN;
+      if (Number.isNaN(ended) || ended > cutoff || workflows.get(snap.job_id)?.ended_at == null) {
+        kept += 1;
+        continue;
+      }
+      const artifacts = dirBytes(join(WORKFLOW_ROOT, snap.job_id));
+      removable.push({ job_id: snap.job_id, ended_at: snap.ended_at, bytes: size + artifacts });
+      bytes += size + artifacts;
+    }
+  } catch {
+    // Nothing to prune if the workflow root cannot be read.
+  }
+  let removed = 0;
+  if (apply) {
+    for (const entry of removable) {
+      try {
+        rmSync(join(WORKFLOW_ROOT, `${entry.job_id}.json`));
+        rmSync(join(WORKFLOW_ROOT, entry.job_id), { recursive: true, force: true });
+        removed += 1;
+      } catch {
+        // Report it even when the filesystem refuses.
+      }
+    }
+  }
+  return { eligible: removable.length, bytes, kept, removed, applied: apply === true };
+}
+
 export function listWorkflows() {
   const found = [];
   try {

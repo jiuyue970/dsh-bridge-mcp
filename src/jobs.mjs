@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, readdirSync, writeFileSync, statSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   CREDENTIAL_ENV_ALLOWLIST,
@@ -10,6 +10,7 @@ import {
   DEFAULT_TIMEOUT_MS,
   isSystemJobId,
   JOB_ROOT,
+  MAX_ANSWER_CHARS,
   MAX_OUTPUT_CHARS,
 } from "./config.mjs";
 
@@ -113,6 +114,75 @@ export function listJobs() {
   }
   for (const [id, job] of jobs) seen.set(id, job);
   return [...seen.values()].sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
+}
+
+/**
+ * Block until one plain worker job settles, or the window closes.
+ *
+ * Both `dsh_wait` and the inline wait inside `dsh_start` need this, and a
+ * second copy would be a second place for the polling interval and the
+ * settled-check to drift apart.
+ */
+export async function waitJob(jobId, maxWaitMs) {
+  const deadline = Date.now() + maxWaitMs;
+  let current = readJob(jobId);
+  if (current === undefined) return { settled: false, job: undefined };
+  while (current.status === "running" && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, Math.min(250, Math.max(25, deadline - Date.now()))));
+    current = readJob(jobId) ?? current;
+  }
+  return { settled: current.status !== "running", job: current };
+}
+
+/**
+ * Remove this bridge's own finished job snapshots older than a cutoff.
+ *
+ * Only settled jobs are eligible: a running job's snapshot is the sole record
+ * a later process has of it. The caller decides whether to apply the deletion,
+ * because losing evidence is worse than keeping bytes.
+ */
+export function pruneJobState({ olderThanMs, apply = false, now = Date.now() } = {}) {
+  const cutoff = now - olderThanMs;
+  const removable = [];
+  let kept = 0;
+  let bytes = 0;
+  try {
+    ensureJobRoot();
+    for (const name of readdirSync(JOB_ROOT)) {
+      if (!name.endsWith(".json")) continue;
+      const path = join(JOB_ROOT, name);
+      let snap;
+      let size = 0;
+      try {
+        size = statSync(path).size;
+        snap = JSON.parse(readFileSync(path, "utf8"));
+      } catch {
+        continue;
+      }
+      const ended = snap.ended_at === null || snap.ended_at === undefined ? null : Date.parse(snap.ended_at);
+      const settled = snap.status !== "running" && ended !== null && !Number.isNaN(ended);
+      if (!settled || ended > cutoff || jobs.get(snap.job_id)?.status === "running") {
+        kept += 1;
+        continue;
+      }
+      removable.push({ job_id: snap.job_id, ended_at: snap.ended_at, bytes: size });
+      bytes += size;
+    }
+  } catch {
+    // An unreadable job root simply means there is nothing to prune.
+  }
+  let removed = 0;
+  if (apply) {
+    for (const entry of removable) {
+      try {
+        rmSync(join(JOB_ROOT, `${entry.job_id}.json`));
+        removed += 1;
+      } catch {
+        // Leave a file we cannot delete; the report still names it.
+      }
+    }
+  }
+  return { eligible: removable.length, bytes, kept, removed, applied: apply === true };
 }
 
 function appendBounded(job, channel, chunk) {
@@ -333,7 +403,21 @@ export function statusOf(job, { includeLogs = false } = {}) {
     truncated: job.truncated === true,
   };
   if (job.error) out.error = job.error;
-  out.answer = extractAnswer(job.stdout);
+
+  const answer = extractAnswer(job.stdout);
+  out.answer_chars = answer.length;
+  if (includeLogs || answer.length <= MAX_ANSWER_CHARS) {
+    out.answer = answer;
+    out.answer_truncated = false;
+  } else {
+    out.answer = answer.slice(0, MAX_ANSWER_CHARS);
+    out.answer_truncated = true;
+    out.answer_omitted = answer.length - MAX_ANSWER_CHARS;
+    out.answer_path = join(JOB_ROOT, `${job.job_id}.json`);
+    out.answer_note =
+      "Answer trimmed for the caller's context. Re-read with include_logs=true, " +
+      "or read the stdout field of answer_path for the whole text.";
+  }
   if (includeLogs) {
     out.stderr = job.stderr.slice(-2_000);
   }
