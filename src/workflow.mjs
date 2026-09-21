@@ -122,6 +122,7 @@ function planSummary(plan) {
       task: task.task.slice(0, 300),
       read_paths: task.read_paths,
       write_paths: task.write_paths,
+      ...(task.dropped_reads?.length ? { dropped_reads: task.dropped_reads } : {}),
       depends_on: task.depends_on,
       acceptance: task.acceptance,
     })),
@@ -314,6 +315,11 @@ function planningPrompt(request) {
     "write_paths must stay inside the allowed paths above. read_paths may name anything inside the working directory,",
     "so declare every file a worker genuinely needs to read rather than trimming the list to fit the write scope.",
     "No path, read or write, may name a credential file such as .env, .env.secrets, a private key, or credentials.",
+    "Every path is RELATIVE to the working directory. Never write an absolute path (/Users/..., /Volumes/...) and never",
+    "climb out with ../. If the work needs files outside the working directory, the working directory was chosen too",
+    "narrowly: say so in the task text instead of declaring a path that leaves it.",
+    "Declare files, not tool state. A task that runs git (diff, rebase, worktree, log) or a package manager does not",
+    "declare .git or node_modules: those are reached through the command, and naming them is refused.",
     "",
     "## Hard rules",
     "- Investigate the codebase read-only. Do not modify, create, or delete any file.",
@@ -1221,6 +1227,11 @@ export function workflowStatus(workflow, { live, includeDetail = false } = {}) {
   }
   if (workflow.plan !== null && workflow.plan !== undefined) {
     out.task_count = workflow.plan.tasks.length;
+    // Reads the bridge dropped from the plan are an adjustment the caller should
+    // know about: the task text may still ask for that file, and it was simply
+    // left out of conflict detection. The count is always cheap to report.
+    const dropped = workflow.plan.tasks.reduce((sum, task) => sum + (task.dropped_reads?.length ?? 0), 0);
+    if (dropped > 0) out.dropped_read_count = dropped;
   }
   out.counts = workflow.result_counts ?? countOutcomes(workflow);
 

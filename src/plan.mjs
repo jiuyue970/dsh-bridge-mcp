@@ -110,7 +110,7 @@ function normaliseRelativePath(value, label) {
       throw new PlanError(`${label} targets protected directory "${segment}": "${raw}"`);
     }
     if (isCredentialFile(segment)) {
-      throw new PlanError(`${label} targets a credential file "${segment}": "${raw}"`);
+      throw new PlanError(`${label} targets a credential file "${segment}": "${raw}"`, { code: "credential" });
     }
   }
   return segments.join("/");
@@ -412,9 +412,25 @@ export function validatePlan(raw, { cwd, mode, allowedPaths, cwdCanonical }) {
     if (!Array.isArray(reads)) throw new PlanError(`${at} ("${id}").read_paths must be an array`);
     if (!Array.isArray(writes)) throw new PlanError(`${at} ("${id}").write_paths must be an array`);
 
-    const readPaths = reads.map((value, i) =>
-      normaliseRelativePath(value, `${at} ("${id}").read_paths[${i}]`),
-    );
+    // A read declaration only feeds conflict detection, so one the bridge cannot
+    // use is dropped rather than fatal. Discarding the whole plan over it threw
+    // away the planning work: on 2026-09-21, fifteen workflows ended with zero
+    // tasks because one read named an absolute path, a sibling via "..", or
+    // .git for a task that merely runs git. Dropping such a read cannot hide a
+    // real conflict — every one of those targets is outside the cwd or in a
+    // directory no task may write — and the worker's own access is unchanged,
+    // since a declaration never granted it. A credential read is different: it
+    // is a plan aimed at secrets on purpose, so it still fails the plan.
+    const droppedReads = [];
+    const readPaths = [];
+    reads.forEach((value, i) => {
+      try {
+        readPaths.push(normaliseRelativePath(value, `${at} ("${id}").read_paths[${i}]`));
+      } catch (error) {
+        if (!(error instanceof PlanError) || error.detail?.code === "credential") throw error;
+        droppedReads.push({ path: typeof value === "string" ? value : String(value), reason: error.message });
+      }
+    });
     const writePaths = writes.map((value, i) =>
       normaliseRelativePath(value, `${at} ("${id}").write_paths[${i}]`),
     );
@@ -465,6 +481,18 @@ export function validatePlan(raw, { cwd, mode, allowedPaths, cwdCanonical }) {
     // Every declared path is proven contained before anything is scheduled, and
     // its canonical target recorded so aliases of one file conflict correctly.
     const readCanonical = [];
+    for (let i = readPaths.length - 1; i >= 0; i -= 1) {
+      const readPath = readPaths[i];
+      if (readPath === ".") continue;
+      try {
+        resolveWithin(cwdReal, readPath, `${at} ("${id}").read_paths`);
+      } catch (error) {
+        if (!(error instanceof PlanError)) throw error;
+        droppedReads.push({ path: readPath, reason: error.message });
+        readPaths.splice(i, 1);
+      }
+    }
+    if (mode === "read-only" && readPaths.length === 0) readPaths.push(".");
     for (const readPath of readPaths) {
       readCanonical.push(
         readPath === "." ? cwdReal : resolveWithin(cwdReal, readPath, `${at} ("${id}").read_paths`),
@@ -500,6 +528,7 @@ export function validatePlan(raw, { cwd, mode, allowedPaths, cwdCanonical }) {
       write_paths: writePaths,
       read_canonical: readCanonical,
       write_canonical: writeCanonical,
+      dropped_reads: droppedReads,
       depends_on: [...new Set(dependsOn)],
       acceptance,
       index,

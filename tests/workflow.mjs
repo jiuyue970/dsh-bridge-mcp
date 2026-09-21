@@ -245,7 +245,7 @@ try {
 
   // 4) An illegal plan fails the workflow and starts no worker at all.
   for (const [label, badPlan] of [
-    ["traversal", { tasks: [{ id: "x", task: "escape", read_paths: ["../etc"], write_paths: [] }] }],
+    ["traversal", { tasks: [{ id: "x", task: "escape", write_paths: ["../etc"] }] }],
     ["absolute", { tasks: [{ id: "x", task: "escape", write_paths: ["/etc/passwd"] }] }],
     ["cycle", { tasks: [
       { id: "a", task: "a", depends_on: ["b"], write_paths: ["src/a"] },
@@ -261,6 +261,38 @@ try {
     assert.equal(trace().length, 0, `${label}: no worker may be started for a rejected plan`);
   }
   console.log("ok - illegal, escaping and cyclic plans are rejected without starting workers");
+
+  // 4a) An unusable READ no longer throws away the plan. It is dropped, the
+  // drop is reported, and the workflow runs its task to the end.
+  {
+    resetTrace();
+    const plan = {
+      tasks: [
+        {
+          id: "r1",
+          task: "read around",
+          read_paths: ["src", "../sibling", "/abs/elsewhere", ".git"],
+          write_paths: ["src/out.txt"],
+          depends_on: [],
+          acceptance: "report",
+        },
+      ],
+    };
+    const { final } = await runWorkflow(plan, { count: 1 });
+    assert.equal(final.status, "awaiting_review", "a plan with unusable reads must still run");
+    assert.equal(final.children.length, 1, "its task must actually be dispatched");
+    const dropped = final.plan.tasks[0].dropped_reads;
+    assert.deepEqual(
+      dropped.map((d) => d.path).sort(),
+      ["../sibling", ".git", "/abs/elsewhere"].sort(),
+      "each unusable read is recorded with its path",
+    );
+    assert.ok(dropped.every((d) => typeof d.reason === "string" && d.reason !== ""), "each drop keeps its reason");
+    assert.deepEqual(final.plan.tasks[0].read_paths, ["src"], "the usable read survives");
+    const view = workflowStatus(final, { live: false });
+    assert.equal(view.dropped_read_count, 3, "the status view reports how many reads were dropped");
+    console.log("ok - unusable reads are dropped and reported, and the workflow still runs");
+  }
 
   // 4b) A plan that declares paths outside the caller's allowed_paths is
   // rejected before any worker runs. This is the scope the caller asked for,

@@ -47,6 +47,17 @@ function validate(tasks, mode = "workspace-write", allowedPaths = undefined) {
 }
 
 /** Assert a plan is rejected, and that the message names the real problem. */
+/** A read the bridge cannot use is dropped from the plan and recorded, not fatal. */
+function dropsRead(path, reason) {
+  const plan = validate([base({ read_paths: ["src", path] })]);
+  const task = plan.tasks[0];
+  assert.ok(!task.read_paths.includes(path), `the unusable read "${path}" must not be kept`);
+  assert.ok(task.read_paths.includes("src"), "the other reads survive");
+  const entry = task.dropped_reads.find((drop) => drop.path === path);
+  assert.ok(entry, `the dropped read "${path}" must be recorded`);
+  assert.match(entry.reason, reason, `the recorded reason for "${path}"`);
+}
+
 function rejects(tasks, needle, mode = "workspace-write", allowedPaths = undefined) {
   assert.throws(
     () => validate(tasks, mode, allowedPaths),
@@ -94,32 +105,40 @@ try {
   console.log("ok - schema, unique ids, dependency existence and acyclicity are enforced");
 
   // --- path rules ----------------------------------------------------------
-  rejects([base({ read_paths: ["../etc"] })], /escapes the workflow cwd/);
+  // Writes that leave the cwd, hit a protected directory, or escape through a
+  // symlink still fail the plan: a write is what changes a project.
   rejects([base({ write_paths: ["src/../../etc"] })], /escapes the workflow cwd/);
-  rejects([base({ read_paths: ["/etc/passwd"] })], /must be relative/);
   rejects([base({ write_paths: ["C:/Windows"] })], /must be relative/);
   rejects([base({ write_paths: ["src\\..\\..\\etc"] })], /escapes the workflow cwd/);
   rejects([base({ write_paths: [".git/config"] })], /protected directory ".git"/);
-  rejects([base({ read_paths: ["node_modules/left-pad"] })], /protected directory "node_modules"/);
   rejects([base({ write_paths: ["."] })], /whole cwd as a write path/);
-  // The symlink escape: declared inside, resolving outside.
-  rejects([base({ read_paths: ["escape-link"] })], /resolves outside the workflow cwd via a symlink/);
   rejects([base({ write_paths: ["escape-link/new.txt"] })], /resolves outside the workflow cwd via a symlink/);
+  // The same faults in a READ are dropped instead: a read only feeds conflict
+  // detection, so the plan survives and the drop is recorded for review.
+  dropsRead("../etc", /escapes the workflow cwd/);
+  dropsRead("/etc/passwd", /must be relative/);
+  dropsRead("node_modules/left-pad", /protected directory "node_modules"/);
+  dropsRead(".git", /protected directory ".git"/);
+  dropsRead("escape-link", /resolves outside the workflow cwd via a symlink/);
   // Paths inside are normalised rather than rejected.
   const okPaths = validate([base({ read_paths: ["./src/", "src/index.js"], write_paths: ["src/new.js"] })]);
   assert.deepEqual(okPaths.tasks[0].read_paths, ["src", "src/index.js"]);
   assert.deepEqual(okPaths.tasks[0].write_paths, ["src/new.js"]);
   // A not-yet-existing file inside the cwd is legitimate.
   validate([base({ write_paths: ["src/brand/new-file.js"] })]);
-  console.log("ok - traversal, absolute paths, protected dirs and symlink escapes are rejected");
+  // A dropped read leaves the rest of the task's reads intact.
+  const mixed = validate([base({ read_paths: ["src", "/abs/elsewhere", "src/index.js"] })]);
+  assert.deepEqual(mixed.tasks[0].read_paths, ["src", "src/index.js"], "only the unusable read is removed");
+  assert.equal(mixed.tasks[0].dropped_reads.length, 1);
+  console.log("ok - bad writes fail the plan; bad reads are dropped and recorded");
 
   // --- fail-closed symlink resolution --------------------------------------
   // A dangling symlink must be refused, not silently skipped as if absent.
-  rejects([base({ read_paths: ["dangling.js"] })], /unusable symlink/);
+  dropsRead("dangling.js", /unusable symlink/);
   rejects([base({ write_paths: ["dangling.js"] })], /unusable symlink/);
   // Writing "through" a dangling link resolves to nothing real and is refused.
   rejects([base({ write_paths: ["dangling.js/inner.txt"] })], /unusable symlink/);
-  console.log("ok - dangling symlinks are refused rather than treated as absent");
+  console.log("ok - dangling symlinks are refused for writes and dropped for reads, never treated as absent");
 
   // --- internal symlink aliases --------------------------------------------
   // alias.js and src/real.js are the same file, so they must conflict.
@@ -155,7 +174,9 @@ try {
   rejects([base({ write_paths: ["docs/x.md"] })], /outside allowed_paths/, "workspace-write", ["src"]);
   const wideRead = validate([base({ read_paths: ["docs"] })], "workspace-write", ["src"]);
   assert.deepEqual(wideRead.tasks[0].read_paths, ["docs"], "a read outside the write scope is allowed");
-  rejects([base({ read_paths: ["../outside"] })], /escapes the workflow cwd/, "workspace-write", ["src"]);
+  const leftCwd = validate([base({ read_paths: ["../outside"] })], "workspace-write", ["src"]);
+  assert.deepEqual(leftCwd.tasks[0].read_paths, [], "a read leaving the cwd is not kept");
+  assert.match(leftCwd.tasks[0].dropped_reads[0].reason, /escapes the workflow cwd/);
   // The allowed=['src/a'] vs declared 'src' case is the reason containment is
   // one-directional: a symmetric overlap would wrongly admit it.
   rejects([base({ write_paths: ["src"] })], /outside allowed_paths/, "workspace-write", ["src/a"]);
