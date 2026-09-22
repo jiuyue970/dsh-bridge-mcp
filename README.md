@@ -351,6 +351,63 @@ affect the child's model access.
 them per delegation. If a delegated task must be restricted, point `profile` at
 a purpose-built DSH profile instead of reusing `headless`.
 
+## Optional: session-boundary hook
+
+A Codex `UserPromptSubmit` hook that suggests `/new` when a long session receives
+a request for unrelated work. Every request re-sends the whole conversation, so a
+session that keeps taking on new work pays for all of the old work on every turn.
+Size-based auto-compaction cuts wherever the size crosses its limit, often
+mid-task; a task boundary is the cleanest place to start fresh, and finding one
+takes a judgment about meaning, which TypeSafe makes.
+
+It only suggests — it cannot start a session — and it stays quiet unless the
+session is already expensive (over 100,000 tokens of context), it has at least two
+earlier prompts to compare against, the judgment is `new_task` with confidence of
+at least 0.8, and it has not suggested in the last eight prompts. It fails open:
+an error, timeout, missing key, or malformed input produces no output and exit
+code 0, so a prompt is never delayed or blocked by the hook itself.
+
+When it does judge, it sends TypeSafe the new prompt and the session's last four
+prompts, each truncated to 400 characters. Nothing else leaves the machine.
+
+Codex loads hooks from plugins. Install it as a local plugin whose
+`hooks/hooks.json` points at this repository:
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/env DSH_TYPESAFE_ENV_FILE=/absolute/path/to/.env /absolute/path/to/node /absolute/path/to/dsh-bridge-mcp/hooks/session-boundary.mjs",
+            "timeout": 8
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Alongside it, `.codex-plugin/plugin.json` names the plugin and sets
+`"hooks": "./hooks/hooks.json"`, and `.claude-plugin/marketplace.json` lists it
+with `"source": "./"`. Then:
+
+```sh
+codex plugin marketplace add /absolute/path/to/your-local-plugin
+codex plugin add session-boundary@<marketplace-name>
+```
+
+Codex will not run a new hook until you trust it: start `codex`, run `/hooks`,
+review the command, and trust it there. Trust is recorded against the hook
+definition, so editing `hooks.json` asks for review again.
+
+Per-session state (recent prompts and the cooldown) lives under
+`~/.codex/session-boundary/`, or `SESSION_BOUNDARY_STATE_DIR`; files for sessions
+untouched for 14 days are removed.
+
 -----
 
 ## Tests
@@ -371,6 +428,8 @@ injected, so scheduling decisions are deterministic.
 | `tests/stdio.mjs` | settlement waits for stdio to end; complete final answer is captured |
 | `tests/snapshot.mjs` | restarted snapshots are non-live and uncontrollable; malformed snapshots do not crash reads |
 | `tests/cancel.mjs` | cancellation really stops the process and never over-reports |
+| `tests/optimizations.mjs` | inline return, background fallback, first-finisher waiting, timeout tiers, measured defaults, prune rules, answer bound |
+| `tests/session-boundary.mjs` | hook gates (history, context size, confidence, cooldown), fail-open paths, bounded data sent out, transcript tail reading, process exit behaviour without a key |
 
 -----
 
@@ -385,6 +444,7 @@ src/choices.mjs          TypeSafe judgment and credential handling
 src/evidence.mjs         worker evidence contract and grading
 src/jobs.mjs             job lifecycle, spawning, persistence
 src/config.mjs           constants and environment policy
+hooks/session-boundary.mjs  optional Codex hook: suggest /new at task boundaries
 docs/implementation.md   how the workflow is wired, end to end
 docs/design.md           why the bridge exists and the shape it settled on
 ```
