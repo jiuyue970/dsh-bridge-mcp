@@ -390,10 +390,16 @@ export function cancelJob(jobId) {
   return { cancelled: true, pid: job.pid ?? null, signal: "SIGTERM" };
 }
 
-/** Short factual status, omitting bulky fields unless asked. */
-export function statusOf(job, { includeLogs = false } = {}) {
+/**
+ * Short factual status, omitting bulky fields unless asked.
+ *
+ * `answerLimit` lets a caller that is returning several jobs at once share one
+ * budget between them; on its own a job gets the full `MAX_ANSWER_CHARS`.
+ */
+export function statusOf(job, { includeLogs = false, answerLimit = MAX_ANSWER_CHARS } = {}) {
   const out = {
     job_id: job.job_id,
+    kind: "job",
     status: job.status,
     created_at: job.created_at,
     ended_at: job.ended_at,
@@ -404,15 +410,16 @@ export function statusOf(job, { includeLogs = false } = {}) {
   };
   if (job.error) out.error = job.error;
 
+  const limit = Math.max(0, Math.min(answerLimit, MAX_ANSWER_CHARS));
   const answer = extractAnswer(job.stdout);
   out.answer_chars = answer.length;
-  if (includeLogs || answer.length <= MAX_ANSWER_CHARS) {
+  if (includeLogs || answer.length <= limit) {
     out.answer = answer;
     out.answer_truncated = false;
   } else {
-    out.answer = answer.slice(0, MAX_ANSWER_CHARS);
+    out.answer = answer.slice(0, limit);
     out.answer_truncated = true;
-    out.answer_omitted = answer.length - MAX_ANSWER_CHARS;
+    out.answer_omitted = answer.length - limit;
     out.answer_path = join(JOB_ROOT, `${job.job_id}.json`);
     out.answer_note =
       "Answer trimmed for the caller's context. Re-read with include_logs=true, " +

@@ -9,11 +9,15 @@ import {
   DEFAULT_TAIL_CHARS,
   DEFAULT_WAIT_WINDOW_MS,
   DEFAULT_WORKFLOW_TIMEOUT_MS,
+  MAX_ANSWER_CHARS,
   MAX_FOREGROUND_WAIT_CAP_MS,
   MAX_INLINE_WAIT_MS,
   MAX_WAIT_ANY_JOBS,
   MAX_WORKFLOW_TIMEOUT_MS,
+  MIN_SHARED_ANSWER_CHARS,
   TIMEOUT_TIERS,
+  WAIT_ANY_ANSWER_BUDGET_CHARS,
+  WAIT_ANY_MAX_CHARS,
   WORKFLOW_TIMEOUT_TIERS,
   SERVER_NAME,
   SERVER_VERSION,
@@ -74,7 +78,7 @@ server.registerTool(
       "The parent plans with a read-only DSH worker, validates the plan in code, judges safe concurrency with TypeSafe, " +
       "runs one DSH worker per task, and ends in status awaiting_review with compact evidence per task. " +
       "It does NOT claim the work is accepted: check the returned evidence and files yourself. " +
-      "Use dsh_get/dsh_wait/dsh_cancel/dsh_list on the returned job_id exactly as with dsh_start. " +
+      "Use dsh_wait (or dsh_wait_any for several) on the returned job_id to collect it, exactly as with dsh_start. " +
       "Prefer this over dsh_start when a task needs decomposition, several files, or implementation plus tests.",
     inputSchema: {
       task: z
@@ -142,7 +146,8 @@ server.registerTool(
         timeout_ms: workflow.request.timeout_ms,
         typesafe: creds,
         note:
-          "Running in background. Read it with dsh_get, block with dsh_wait, stop it with dsh_cancel. " +
+          "Running in background. Block on it with dsh_wait, which returns the full status once it settles, " +
+          "or dsh_wait_any when you are watching several; stop it with dsh_cancel. " +
           "Final status is awaiting_review: the evidence is a worker report you must verify yourself.",
       });
     } catch (error) {
@@ -231,7 +236,9 @@ server.registerTool(
         pid: job.pid ?? null,
         cwd: job.cwd,
         returned_inline: false,
-        note: "Running in background. Read it with dsh_get, or block with dsh_wait.",
+        note:
+          "Running in background. Block on it with dsh_wait, or dsh_wait_any when you are watching several; " +
+          "both return the finished answer directly, so no dsh_get is needed afterwards.",
       });
     } catch (error) {
       return fail(`dsh_start failed: ${error.message}`);
@@ -247,7 +254,10 @@ server.registerTool(
     description:
       "Read compact status for a DSH job. Works on both a plain worker job from dsh_start and a parent workflow from dsh_delegate. " +
       "A workflow returns phase, counts, per-task evidence summaries and child job ids by default. " +
-      "Bulk fields (stderr tail, full plan, worker transcripts) are omitted unless include_logs asks for them.",
+      "Bulk fields (stderr tail, full plan, worker transcripts) are omitted unless include_logs asks for them. " +
+      "This returns immediately, so it is a read, not a way to wait: to wait for a job use dsh_wait, and for several use dsh_wait_any. " +
+      "Both already return this same status when the job settles, so reach for dsh_get only to re-read a job you have stopped waiting on, " +
+      "or with include_logs=true to recover an answer that came back trimmed.",
     inputSchema: {
       job_id: z.string().min(1).describe("The job_id returned by dsh_start or dsh_delegate."),
       include_logs: z
@@ -315,7 +325,9 @@ server.registerTool(
       const payload = workflowStatus(workflow, { live: true, includeDetail: args.include_logs === true });
       payload.waited_ms = Math.min(window, Date.now() - startedAt);
       if (!outcome.settled) {
-        payload.note = "Still running when the window closed; call dsh_wait or dsh_get again.";
+        payload.note =
+          "Still running when the window closed. Call dsh_wait again, with a longer max_wait_ms if the task is a long one; " +
+          "dsh_get would return this same payload without waiting, so it costs a round trip and learns nothing new.";
       }
       return ok(payload);
     }
@@ -324,7 +336,9 @@ server.registerTool(
     const payload = statusOf(current ?? found.job, { includeLogs: args.include_logs === true });
     payload.waited_ms = Math.min(window, Date.now() - startedAt);
     if ((current ?? found.job).status === "running") {
-      payload.note = "Still running when the window closed; call dsh_wait or dsh_get again.";
+      payload.note =
+        "Still running when the window closed. Call dsh_wait again, with a longer max_wait_ms if the task is a long one; " +
+        "dsh_get would return this same payload without waiting, so it costs a round trip and learns nothing new.";
     }
     return ok(payload);
   },
@@ -485,6 +499,7 @@ server.registerTool(
     description:
       "Wait on a set of job ids at once and return as soon as the first one settles, or with wait_for=\"all\" once every one has. " +
       "Use this instead of calling dsh_wait per job when several run in parallel: it collapses N polling chains into one. " +
+      "Every settled job comes back with the same full status dsh_get would return, including its answer, so no follow-up read is needed. " +
       "Jobs still running when the window closes are listed so you can wait on them again.",
     inputSchema: {
       job_ids: z
@@ -514,40 +529,95 @@ server.registerTool(
     const startedAt = Date.now();
     const deadline = startedAt + window;
 
-    /** One id's current shape, for a worker job or a parent workflow alike. */
-    const snapshot = (id) => {
-      const found = requireJob(id);
-      if (found.error !== undefined) return { job_id: id, status: "unknown", error: found.error };
-      if (found.workflow !== undefined) {
-        const view = workflowStatus(found.workflow, { live: found.live });
-        return { job_id: id, kind: "workflow", status: view.status, phase: view.phase, counts: view.counts ?? null };
-      }
-      const view = statusOf(found.job);
-      return { job_id: id, kind: "job", status: view.status, exit_code: view.exit_code ?? null, answer: view.answer };
+    /**
+     * Is this id still worth waiting for?
+     *
+     * The poll loop below asks this several times a second, so it reads only
+     * liveness. Building a full status here would extract and trim every
+     * worker's answer on every tick to decide a boolean; the full read happens
+     * once, after the loop.
+     *
+     * A workflow snapshot left by an earlier process has no controller and can
+     * never settle in this one, so it counts as finished rather than holding
+     * the whole window open on work nobody is running.
+     */
+    const pending = (found) => {
+      if (found.error !== undefined) return false;
+      if (found.workflow !== undefined) return found.live === true && found.workflow.ended_at === null;
+      return found.job.status === "running";
     };
-    const running = (row) => row.status === "running" || row.status === "planning" || row.status === "judging" || row.status === "executing";
 
-    let rows = ids.map(snapshot);
+    // Both tests short-circuit, so a tick stops reading ids as soon as the
+    // outcome is decided rather than re-reading all of them every time.
+    const goalReached = waitForAll
+      ? () => !ids.some((id) => pending(requireJob(id)))
+      : () => ids.some((id) => !pending(requireJob(id)));
     while (Date.now() < deadline) {
-      const settled = rows.filter((row) => !running(row));
-      if (waitForAll ? settled.length === rows.length : settled.length > 0) break;
+      if (goalReached()) break;
       await new Promise((resolve) => setTimeout(resolve, Math.min(250, Math.max(25, deadline - Date.now()))));
-      rows = ids.map(snapshot);
     }
-    const settled = rows.filter((row) => !running(row));
-    const stillRunning = rows.filter(running).map((row) => row.job_id);
-    return ok({
+
+    // One last read per id. Everything the caller would otherwise fetch with a
+    // follow-up dsh_get is collected here instead: another round trip re-sends
+    // the entire conversation, which costs far more than the text it returns.
+    const finals = ids.map((id) => ({ id, found: requireJob(id) }));
+    const stillRunning = finals.filter((entry) => pending(entry.found)).map((entry) => entry.id);
+    const done = finals.filter((entry) => !pending(entry.found));
+
+    // The answer budget is split evenly, so one talkative worker cannot crowd
+    // out the others; below the floor it overruns instead, because an answer
+    // trimmed to nothing forces exactly the follow-up read this is avoiding.
+    const share =
+      done.length === 0
+        ? MAX_ANSWER_CHARS
+        : Math.max(MIN_SHARED_ANSWER_CHARS, Math.floor(WAIT_ANY_ANSWER_BUDGET_CHARS / done.length));
+    const full = ({ id, found }) => {
+      if (found.error !== undefined) return { job_id: id, status: "unknown", error: found.error };
+      if (found.workflow !== undefined) return workflowStatus(found.workflow, { live: found.live });
+      return statusOf(found.job, { answerLimit: share });
+    };
+
+    // Work that needs attention first, so the ceiling below can only ever drop
+    // the least interesting entries. A settled workflow carries a whole status
+    // that no answer budget bounds, which is what makes the ceiling necessary:
+    // without it, waiting on a set of workflows builds a result of any size.
+    const uneventful = (row) => row.status === "done" || row.status === "awaiting_review";
+    const settled = done.map(full).sort((a, b) => Number(uneventful(a)) - Number(uneventful(b)));
+    const summarised = [];
+    // One entry is always returned whole, even if it alone is over the ceiling:
+    // an empty result would send the caller straight back to dsh_get.
+    while (settled.length > 1 && JSON.stringify(settled).length > WAIT_ANY_MAX_CHARS) {
+      const dropped = settled.pop();
+      summarised.unshift({ job_id: dropped.job_id, kind: dropped.kind ?? null, status: dropped.status });
+    }
+
+    const trimmed = settled.filter((row) => row.answer_truncated === true).length;
+    const payload = {
       waited_ms: Math.min(window, Date.now() - startedAt),
       wait_for: waitForAll ? "all" : "any",
-      settled_count: settled.length,
+      settled_count: done.length,
       running_count: stillRunning.length,
       settled,
       still_running: stillRunning,
       note:
         stillRunning.length === 0
-          ? "Every watched job has settled."
-          : "Call dsh_wait_any again with the still_running ids; do not start duplicates.",
-    });
+          ? "Every watched job has settled, and each settled entry below is its complete final status, answer included. Nothing is left to fetch."
+          : "The settled entries are complete. Call dsh_wait_any again with the still_running ids, and do not start duplicates; " +
+            "dsh_get on one of them would only repeat this same answer at the cost of another round trip.",
+    };
+    if (summarised.length > 0) {
+      payload.settled_summarised = summarised;
+      payload.note_summarised =
+        `${summarised.length} settled job(s) exceeded the ${WAIT_ANY_MAX_CHARS}-character result ceiling and are listed as ids only. ` +
+        "They finished; read one with dsh_get when you need its detail.";
+    }
+    if (trimmed > 0) {
+      payload.answers_trimmed = trimmed;
+      payload.note_answers =
+        `${trimmed} answer(s) were trimmed to share one budget across ${done.length} settled jobs. ` +
+        "Each carries answer_path and answer_omitted; read one with dsh_get include_logs=true only if you need the rest.";
+    }
+    return ok(payload);
   },
 );
 

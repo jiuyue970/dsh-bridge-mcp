@@ -59,9 +59,9 @@ codex mcp list | grep dsh-bridge
 |---|---|
 | `dsh_delegate` | **Run a whole managed workflow**: plan, judge concurrency, execute, report evidence |
 | `dsh_start` | Delegate one task; returns a `job_id` immediately |
-| `dsh_get` | Compact status + final answer (worker job **or** workflow) |
-| `dsh_wait` | Block until settled, bounded window |
-| `dsh_wait_any` | Watch several jobs with one call; return on the first finisher |
+| `dsh_get` | Compact status + final answer (worker job **or** workflow); a read, not a poll |
+| `dsh_wait` | Block until settled, bounded window; returns the full status |
+| `dsh_wait_any` | Watch several jobs with one call; returns each finisher's full status |
 | `dsh_tail` | Output tail for debugging |
 | `dsh_cancel` | Stop a running job or a whole workflow |
 | `dsh_list` | List known jobs and workflows |
@@ -120,6 +120,22 @@ caller's token cost. Three parameters exist for that reason:
   several short ones; the call still returns the moment the job settles.
 - **`dsh_wait_any`** watches a whole parallel set with one call. Without it, N
   parallel jobs cost N polling chains to learn the same thing.
+
+Waiting also returns everything, so collecting a result is never a second call:
+`dsh_wait` and `dsh_wait_any` both hand back the same full status `dsh_get`
+would, answer and failure reason included. `dsh_get` is for re-reading a job you
+stopped waiting on, or for recovering a trimmed answer with `include_logs=true`.
+When several jobs settle in one `dsh_wait_any` window they share a 48000-character
+answer budget, split evenly so one talkative worker cannot crowd out the rest;
+each trimmed answer still carries its `answer_path`. A 64000-character ceiling
+backs that up, since a settled *workflow* returns a whole status that no answer
+budget bounds: entries past it are listed as ids under `settled_summarised`,
+failures first in the full list so the ceiling can only drop finished work.
+
+This was measured, not assumed. Over the quota window that began 2026-09-20, 181
+of 1114 `dsh_get` calls directly followed a `dsh_wait_any` that had returned only
+a status, and the conversation those extra round trips re-sent was 142k tokens at
+the median — far more than the few thousand characters being fetched.
 
 **`tier`** picks a deadline by task shape — `investigate` (5m), `edit` (15m),
 `build` (30m) for a worker, and 20m / 1h / 2h for a whole workflow — instead of
@@ -429,6 +445,7 @@ injected, so scheduling decisions are deterministic.
 | `tests/snapshot.mjs` | restarted snapshots are non-live and uncontrollable; malformed snapshots do not crash reads |
 | `tests/cancel.mjs` | cancellation really stops the process and never over-reports |
 | `tests/optimizations.mjs` | inline return, background fallback, first-finisher waiting, timeout tiers, measured defaults, prune rules, answer bound |
+| `tests/wait-any.mjs` | end-to-end over stdio: a settled job returns exactly what `dsh_get` returns, failures carry their reason, the shared answer budget, first-finisher semantics, notes that steer away from polling, unknown ids |
 | `tests/session-boundary.mjs` | hook gates (history, context size, confidence, cooldown), fail-open paths, bounded data sent out, transcript tail reading, process exit behaviour without a key |
 
 -----

@@ -92,6 +92,48 @@ export const MAX_OUTPUT_CHARS = 200_000;
  */
 export const MAX_ANSWER_CHARS = 12_000;
 
+/**
+ * Total answer text one `dsh_wait_any` call may return, shared by its settled jobs.
+ *
+ * `dsh_wait_any` returns a full status per settled job so the caller does not
+ * have to follow up with `dsh_get` on each one. Measured over the 2026-09-20
+ * quota window, that follow-up was 181 of the 1114 `dsh_get` calls. Inlining is
+ * the cheap side of a lopsided trade: another round trip re-sends the entire
+ * conversation, which was 142k tokens at the median, while the text being
+ * fetched is a few thousand. The budget still has to exist, because up to
+ * `MAX_WAIT_ANY_JOBS` jobs can settle in one window.
+ *
+ * It is split evenly across the settled jobs rather than spent first-come, so
+ * one talkative worker cannot crowd the others out. Each trimmed answer keeps
+ * its `answer_path`, so nothing becomes unreachable.
+ */
+export const WAIT_ANY_ANSWER_BUDGET_CHARS = 48_000;
+
+/**
+ * Answer characters every settled job keeps, however many settled at once.
+ *
+ * With 32 jobs an even split would leave 1.5k each, which is too little to be
+ * a usable answer. Below this floor the budget is allowed to overrun instead:
+ * a truncated-to-nothing answer forces exactly the follow-up read this is
+ * meant to remove.
+ */
+export const MIN_SHARED_ANSWER_CHARS = 3_000;
+
+/**
+ * Hard ceiling on one `dsh_wait_any` result.
+ *
+ * `WAIT_ANY_ANSWER_BUDGET_CHARS` bounds worker answers, but a settled workflow
+ * returns a whole status — children, scheduling, counts — that no answer budget
+ * touches. Waiting on 32 of them would otherwise build a payload of any size,
+ * which is the exact cost this tool exists to avoid. Entries past the ceiling
+ * are replaced by a stub naming the id, so the caller loses nothing it cannot
+ * fetch deliberately.
+ *
+ * Still far below one extra round trip: about 16k tokens against the 142k a
+ * re-sent conversation cost at the median over the 2026-09-20 quota window.
+ */
+export const WAIT_ANY_MAX_CHARS = 64_000;
+
 /** How much of the tail to return when a caller asks for the last output. */
 export const DEFAULT_TAIL_CHARS = 4_000;
 
