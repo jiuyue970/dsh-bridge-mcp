@@ -22,8 +22,8 @@ import {
   waitWorkflow,
   workflowStatus,
 } from "../src/workflow.mjs";
-import { WORKFLOW_ROOT } from "../src/config.mjs";
-import { readJobLive } from "../src/jobs.mjs";
+import { DEFAULT_PROFILE, WORKFLOW_ROOT } from "../src/config.mjs";
+import { readJobLive, startJob } from "../src/jobs.mjs";
 
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 
@@ -127,7 +127,7 @@ function resetTrace() {
 }
 
 /** Run one workflow to completion with an injected chooser count. */
-async function runWorkflow(plan, { count = 1, mode = "workspace-write", timeoutMs = 30_000, env = {} } = {}) {
+async function runWorkflow(plan, { count = 1, mode = "workspace-write", timeoutMs = 30_000, env = {}, profile } = {}) {
   writeFileSync(planFile, JSON.stringify(plan));
   process.env.FAKE_PLAN_FILE = planFile;
   process.env.FAKE_TRACE_DIR = traceDir;
@@ -151,6 +151,7 @@ async function runWorkflow(plan, { count = 1, mode = "workspace-write", timeoutM
     mode,
     allowedPaths: ["."],
     timeoutMs,
+    profile,
     dshBin: fakeBin,
   });
   const outcome = await waitWorkflow(workflow.job_id, timeoutMs + 5_000);
@@ -815,6 +816,37 @@ try {
     assert.deepEqual(detail.children[0].artifacts, ["artifacts/solo-report.json"]);
     assert.deepEqual(detail.children[0].issues, []);
     console.log("ok - the workflow ends awaiting_review with complete per-task evidence");
+  }
+
+  // 9a) A profile the caller picks for the workers never reaches the planner.
+  // A profile is how a DSH run gains network tools (a GitHub server that can
+  // merge, say), and the read-only file sandbox does not narrow those, so a
+  // write-capable profile must stop at the workers that were chosen to use it.
+  resetTrace();
+  {
+    const booted = [];
+    __setWorkflowDeps({
+      startJob: (options) => {
+        const job = startJob(options);
+        booted.push({ job_id: job.job_id, profile: options.profile });
+        return job;
+      },
+    });
+    try {
+      const plan = { tasks: [{ id: "w", task: "writes", write_paths: ["src/w"], depends_on: [] }] };
+      const { final } = await runWorkflow(plan, { count: 1, profile: "write-capable-for-test" });
+      assert.equal(final.status, "awaiting_review");
+      const plannerId = final.plan_job_id ?? final.planner_job_id;
+      const planner = booted.find((entry) => entry.job_id === plannerId);
+      assert.ok(planner, "the planner's launch must be recorded");
+      assert.equal(planner.profile, DEFAULT_PROFILE, "the planner boots the default profile, not the caller's");
+      const worker = booted.find((entry) => entry.job_id === final.children[0].job_id);
+      assert.ok(worker, "the worker's launch must be recorded");
+      assert.equal(worker.profile, "write-capable-for-test", "the worker boots the profile the caller chose");
+    } finally {
+      __setWorkflowDeps({ startJob });
+    }
+    console.log("ok - a caller's profile reaches the workers and never the planner");
   }
 
   // 9b) A failing worker's artifact paths and unresolved issues survive into the

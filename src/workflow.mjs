@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, w
 import { isAbsolute, join } from "node:path";
 import {
   DEFAULT_PLANNING_TIMEOUT_MS,
+  DEFAULT_PROFILE,
   DEFAULT_WORKFLOW_TIMEOUT_MS,
   MAX_ARTIFACT_ANSWER_CHARS,
   MAX_DEPENDENCY_CONTEXT_CHARS,
@@ -847,10 +848,16 @@ function startPlanner(workflow) {
     Math.max(1, remainingMs(workflow)),
   );
   try {
+    // The planner always boots the default profile, whatever the caller asked
+    // for. A profile is how a DSH run gains network tools — a GitHub server
+    // that can merge a pull request, say — and the bridge's read-only file
+    // sandbox does not narrow those. The planner only reads the repository and
+    // writes a plan, so a profile chosen to let workers change something
+    // outside the sandbox must never reach it.
     const job = deps.startJob({
       task: planningPrompt(workflow.request),
       cwd: workflow.request.cwd,
-      profile: workflow.request.profile,
+      profile: DEFAULT_PROFILE,
       dshBin: workflow.request.dsh_bin,
       timeoutMs: planningTimeout,
       deadlineAt: workflow.deadline_at,

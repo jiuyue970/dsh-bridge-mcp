@@ -367,6 +367,15 @@ affect the child's model access.
 them per delegation. If a delegated task must be restricted, point `profile` at
 a purpose-built DSH profile instead of reusing `headless`.
 
+**`mode: read-only` does not narrow a profile's MCP tools.** The mode confines
+DSH's file sandbox; an MCP server wired into the profile is a separate network
+capability. A read-only workflow on a profile carrying a write-capable GitHub
+server can still merge a pull request. Keep the default profile read-only (the
+GitHub MCP server honours an `X-MCP-Readonly: true` header) and put write access
+in a separate profile that a caller selects per task. A workflow's planner
+always boots the default profile, whatever `profile` the caller passes, so a
+write-capable profile reaches only the task workers.
+
 ## Optional: session-boundary hook
 
 A Codex `UserPromptSubmit` hook that suggests `/new` when a long session receives

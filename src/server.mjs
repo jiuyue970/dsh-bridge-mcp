@@ -121,7 +121,11 @@ server.registerTool(
       profile: z
         .string()
         .optional()
-        .describe(`DSH profile to boot for every worker. Default "${DEFAULT_PROFILE}".`),
+        .describe(
+          `DSH profile to boot for every task worker. Default "${DEFAULT_PROFILE}". ` +
+            `The planner always boots "${DEFAULT_PROFILE}", so a profile that adds write-capable tools reaches only the workers. ` +
+            "Note that mode does not narrow a profile's network tools: a read-only workflow on a write-capable profile can still write through them.",
+        ),
     },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
   },
