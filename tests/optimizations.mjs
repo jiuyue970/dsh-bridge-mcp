@@ -151,11 +151,11 @@ try {
     assert.ok(JSON.stringify(bounded).length < chars, "the bounded payload is smaller than the raw answer");
 
     const whole = statusOf(current, { includeLogs: true });
-    assert.equal(whole.answer_truncated, false, "include_logs returns the answer whole");
+    assert.equal(whole.answer_truncated, undefined, "include_logs returns the answer whole");
     assert.equal(whole.answer.length, chars, "nothing is lost, only withheld by default");
 
     const small = statusOf({ ...current, stdout: "short\n" });
-    assert.equal(small.answer_truncated, false, "a normal answer is never trimmed");
+    assert.equal(small.answer_truncated, undefined, "a normal answer is never trimmed, and says nothing about trimming");
     assert.equal(small.answer, "short");
     assert.equal(small.answer_omitted, undefined, "no omission fields on an untrimmed answer");
     console.log("ok - an oversized answer is bounded by default and recoverable in full");

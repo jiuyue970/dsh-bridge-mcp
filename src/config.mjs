@@ -138,6 +138,33 @@ export const WAIT_ANY_MAX_CHARS = 64_000;
 export const DEFAULT_TAIL_CHARS = 4_000;
 
 /**
+ * Most characters `dsh_tail` returns per stream, whatever the caller asks for.
+ *
+ * The tail is a debugging read, and callers asked for 12,000 to 20,000
+ * characters per stream: over the quota window that began 2026-09-20 its median
+ * reply was 16,461 characters, most of it the worker's reasoning. That text
+ * then rode along in every later request of the conversation. The last 8,000
+ * characters of reasoning show what a worker is doing or was doing when it
+ * stopped; the whole answer is read with `dsh_get` and `include_logs=true`.
+ */
+export const MAX_TAIL_CHARS = 8_000;
+
+/**
+ * Characters of a worker's stderr kept per job.
+ *
+ * DSH headless streams the worker's reasoning to stderr and, when a provider
+ * call fails, ends with the diagnostic line that explains why. The bridge
+ * keeps the end of the stream, not the start: the P90 job over 1,310 measured
+ * snapshots filled this whole buffer, and keeping the head would drop exactly
+ * the failure line.
+ */
+export const MAX_STDERR_CHARS = 20_000;
+
+/** Diagnostic lines kept per job, and characters kept of each. */
+export const MAX_DIAGNOSTICS = 5;
+export const DIAGNOSTIC_CHARS = 300;
+
+/**
  * Root for all bridge runtime state.
  *
  * `tmpdir()` is the default, but it is not stable across launchers: an MCP host

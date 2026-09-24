@@ -84,7 +84,8 @@ try {
   // statusOf surfaces the complete answer to a caller reading a settled job.
   const status = statusOf(settled);
   assert.equal(status.answer, ANSWER + TAIL, "statusOf must surface the complete answer");
-  assert.equal(status.truncated, false, "a short answer must not be flagged as truncated");
+  // Flags that are almost always false are omitted rather than sent as false.
+  assert.equal(status.truncated, undefined, "a short answer must not be flagged as truncated");
   console.log("ok - answer extraction and status reporting survive settlement");
 
   // --- the persisted reader refuses ids that are not ours -------------------

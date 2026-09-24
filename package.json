@@ -11,7 +11,7 @@
     "node": ">=20.12.0"
   },
   "scripts": {
-    "test": "node tests/plan.mjs && node tests/stdio.mjs && node tests/choices.mjs && node tests/cancel.mjs && node tests/workflow.mjs && node tests/snapshot.mjs && node tests/optimizations.mjs && node tests/wait-any.mjs && node tests/session-boundary.mjs"
+    "test": "node tests/plan.mjs && node tests/stdio.mjs && node tests/choices.mjs && node tests/cancel.mjs && node tests/workflow.mjs && node tests/snapshot.mjs && node tests/optimizations.mjs && node tests/wait-any.mjs && node tests/payload.mjs && node tests/session-boundary.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

@@ -152,6 +152,24 @@ text. Nothing is lost: `include_logs=true` returns the answer in full. This
 matches the budget the workflow reader already applied, so both paths behave the
 same way.
 
+
+### Lean replies
+
+Every reply is compact JSON, and a field earns its place by telling the caller
+something: the `cwd` it passed is not echoed back, and `truncated` /
+`answer_truncated` appear only when true. Measured on 1,354 real job snapshots,
+that cut the default read by 6.0%; most of what remains is the answer itself.
+
+DSH headless streams the worker's reasoning to stderr, and that reasoning never
+enters a reply. What a caller does need from stderr is the reason a job failed —
+a single `dsh: CODE: message` line such as `RATE_LIMIT: 429` — and that is
+returned by default as `diagnostics`, so learning why a job failed takes no
+extra read. The bridge keeps the *end* of stderr, since the diagnostic comes
+after the reasoning. `include_logs=true` now means the whole answer (or a
+workflow's full detail) and nothing else, which cut those reads by 27.5%.
+`dsh_tail` is where the reasoning is read — the only sign of progress while a
+job runs — and caps each stream at 8000 characters. `dsh_list` returns 20 rows
+per list by default (`limit`, up to 50); its counts cover everything.
 ### Reclaiming disk
 
 Every delegation leaves a snapshot, and a workflow also leaves an artifact
@@ -455,6 +473,7 @@ injected, so scheduling decisions are deterministic.
 | `tests/cancel.mjs` | cancellation really stops the process and never over-reports |
 | `tests/optimizations.mjs` | inline return, background fallback, first-finisher waiting, timeout tiers, measured defaults, prune rules, answer bound |
 | `tests/wait-any.mjs` | end-to-end over stdio: a settled job returns exactly what `dsh_get` returns, failures carry their reason, the shared answer budget, first-finisher semantics, notes that steer away from polling, unknown ids |
+| `tests/payload.mjs` | end-to-end over stdio: failure diagnostics by default and kept from the end of stderr, reasoning never in a reply, `include_logs` returns the whole answer only, omitted fields, compact JSON, `dsh_tail` cap, bounded `dsh_list` |
 | `tests/session-boundary.mjs` | hook gates (history, context size, confidence, cooldown), fail-open paths, bounded data sent out, transcript tail reading, process exit behaviour without a key |
 
 -----

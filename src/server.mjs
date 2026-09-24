@@ -12,6 +12,7 @@ import {
   MAX_ANSWER_CHARS,
   MAX_FOREGROUND_WAIT_CAP_MS,
   MAX_INLINE_WAIT_MS,
+  MAX_TAIL_CHARS,
   MAX_WAIT_ANY_JOBS,
   MAX_WORKFLOW_TIMEOUT_MS,
   MIN_SHARED_ANSWER_CHARS,
@@ -35,9 +36,15 @@ import {
   workflowStatus,
 } from "./workflow.mjs";
 
-/** MCP tool results are JSON text; never throw out of a handler. */
+/**
+ * MCP tool results are JSON text; never throw out of a handler.
+ *
+ * Compact, not indented: every result is re-sent with each later request of
+ * the caller's conversation, and indentation measured 2.2% of the bridge's
+ * replies while telling a model nothing it cannot parse without it.
+ */
 function ok(payload) {
-  return { content: [{ type: "text", text: JSON.stringify(payload, null, 1) }] };
+  return { content: [{ type: "text", text: JSON.stringify(payload) }] };
 }
 
 function fail(message) {
@@ -59,6 +66,14 @@ function requireJob(jobId) {
   }
   return { job };
 }
+
+/**
+ * Rows `dsh_list` returns per list. The state directory keeps every job until
+ * it is pruned (1,310 on the measuring machine), so the list is bounded; the
+ * counts still cover everything.
+ */
+const DEFAULT_LIST_LIMIT = 20;
+const MAX_LIST_LIMIT = 50;
 
 const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
 
@@ -149,10 +164,7 @@ server.registerTool(
         mode: workflow.request.mode,
         timeout_ms: workflow.request.timeout_ms,
         typesafe: creds,
-        note:
-          "Running in background. Block on it with dsh_wait, which returns the full status once it settles, " +
-          "or dsh_wait_any when you are watching several; stop it with dsh_cancel. " +
-          "Final status is awaiting_review: the evidence is a worker report you must verify yourself.",
+        note: "Running. Collect it with dsh_wait. It ends in awaiting_review: a worker report you must verify yourself.",
       });
     } catch (error) {
       return fail(`dsh_delegate failed: ${error.message}`);
@@ -238,11 +250,10 @@ server.registerTool(
         job_id: job.job_id,
         status: job.status,
         pid: job.pid ?? null,
-        cwd: job.cwd,
+        // The caller knows the directory it passed; only a defaulted one is news.
+        ...(args.cwd === undefined ? { cwd: job.cwd } : {}),
         returned_inline: false,
-        note:
-          "Running in background. Block on it with dsh_wait, or dsh_wait_any when you are watching several; " +
-          "both return the finished answer directly, so no dsh_get is needed afterwards.",
+        note: "Running. Collect it with dsh_wait, or dsh_wait_any for several.",
       });
     } catch (error) {
       return fail(`dsh_start failed: ${error.message}`);
@@ -267,7 +278,10 @@ server.registerTool(
       include_logs: z
         .boolean()
         .optional()
-        .describe("Include a stderr tail, or for a workflow the full decision and plan detail. Default false."),
+        .describe(
+          "Return the answer untrimmed, or for a workflow the full decision and plan detail. Default false. " +
+            "A failure's diagnostics are always included, so this is not needed to see why a job failed.",
+        ),
     },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
@@ -305,7 +319,7 @@ server.registerTool(
           `Observation window in milliseconds. Default ${DEFAULT_WAIT_WINDOW_MS}, capped at ${MAX_FOREGROUND_WAIT_CAP_MS}. ` +
             "Each poll re-sends your whole conversation, so prefer one long window over several short ones.",
         ),
-      include_logs: z.boolean().optional().describe("Include a stderr tail when settling. Default false."),
+      include_logs: z.boolean().optional().describe("Return the answer untrimmed when it settles. Default false."),
     },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
@@ -329,9 +343,7 @@ server.registerTool(
       const payload = workflowStatus(workflow, { live: true, includeDetail: args.include_logs === true });
       payload.waited_ms = Math.min(window, Date.now() - startedAt);
       if (!outcome.settled) {
-        payload.note =
-          "Still running when the window closed. Call dsh_wait again, with a longer max_wait_ms if the task is a long one; " +
-          "dsh_get would return this same payload without waiting, so it costs a round trip and learns nothing new.";
+        payload.note = "Still running. Wait again with a longer max_wait_ms; dsh_get would only return this same payload.";
       }
       return ok(payload);
     }
@@ -340,9 +352,7 @@ server.registerTool(
     const payload = statusOf(current ?? found.job, { includeLogs: args.include_logs === true });
     payload.waited_ms = Math.min(window, Date.now() - startedAt);
     if ((current ?? found.job).status === "running") {
-      payload.note =
-        "Still running when the window closed. Call dsh_wait again, with a longer max_wait_ms if the task is a long one; " +
-        "dsh_get would return this same payload without waiting, so it costs a round trip and learns nothing new.";
+      payload.note = "Still running. Wait again with a longer max_wait_ms; dsh_get would only return this same payload.";
     }
     return ok(payload);
   },
@@ -354,14 +364,20 @@ server.registerTool(
   {
     title: "Read a DSH worker output tail",
     description:
-      "Return the last N characters of the worker's output. Note that DSH headless delivers its answer in one write at the end, " +
-      "so a running job usually shows nothing here; this is mainly useful after the job settles.",
+      "Return the last N characters of a worker's two output streams. stderr_tail is the worker's reasoning as it streams: " +
+      "the only sign of progress while a job runs, and what it was doing when it stopped. stdout_tail is the answer, which " +
+      "arrives in one write at the end; to read a whole answer use dsh_get with include_logs=true instead.",
     inputSchema: {
       job_id: z
         .string()
         .min(1)
         .describe("A worker job_id, or a workflow job_id plus a child task_id to tail one worker."),
-      chars: z.number().int().positive().optional().describe(`Tail length. Default ${DEFAULT_TAIL_CHARS}.`),
+      chars: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe(`Tail length per stream. Default ${DEFAULT_TAIL_CHARS}, capped at ${MAX_TAIL_CHARS}.`),
       task_id: z
         .string()
         .optional()
@@ -372,7 +388,19 @@ server.registerTool(
   async (args) => {
     const found = requireJob(args.job_id);
     if (found.error !== undefined) return fail(found.error);
-    const n = args.chars ?? DEFAULT_TAIL_CHARS;
+    const n = Math.min(args.chars ?? DEFAULT_TAIL_CHARS, MAX_TAIL_CHARS);
+    const capped = (args.chars ?? 0) > MAX_TAIL_CHARS;
+    /** Both tails of one worker job, saying so when the request was capped. */
+    const tails = (job) => {
+      const out = String(job.stdout ?? "");
+      const err = String(job.stderr ?? "");
+      return {
+        stdout_tail: out.slice(-n),
+        stderr_tail: err.slice(-n),
+        stdout_chars: out.length,
+        ...(capped ? { chars_capped: MAX_TAIL_CHARS } : {}),
+      };
+    };
 
     if (found.workflow !== undefined) {
       const workflow = found.workflow;
@@ -398,28 +426,10 @@ server.registerTool(
       }
       const job = readJob(child.job_id);
       if (job === undefined) return fail(`child worker job "${child.job_id}" has no snapshot`);
-      const out = String(job.stdout ?? "");
-      const err = String(job.stderr ?? "");
-      return ok({
-        job_id: child.job_id,
-        task_id: child.task_id,
-        status: job.status,
-        stdout_tail: out.slice(-n),
-        stderr_tail: err.slice(-n),
-        stdout_chars: out.length,
-      });
+      return ok({ job_id: child.job_id, task_id: child.task_id, status: job.status, ...tails(job) });
     }
 
-    const job = found.job;
-    const out = String(job.stdout ?? "");
-    const err = String(job.stderr ?? "");
-    return ok({
-      job_id: job.job_id,
-      status: job.status,
-      stdout_tail: out.slice(-n),
-      stderr_tail: err.slice(-n),
-      stdout_chars: out.length,
-    });
+    return ok({ job_id: found.job.job_id, status: found.job.status, ...tails(found.job) });
   },
 );
 
@@ -459,15 +469,23 @@ server.registerTool(
   {
     title: "List DSH worker jobs and workflows",
     description: "List known DSH worker jobs (dsh_start) and parent workflows (dsh_delegate), newest first.",
-    inputSchema: {},
+    inputSchema: {
+      limit: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe(`Rows returned per list. Default ${DEFAULT_LIST_LIMIT}, capped at ${MAX_LIST_LIMIT}; the counts cover everything.`),
+    },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
-  async () => {
+  async (args) => {
     const all = listJobs();
     const flows = listWorkflows();
+    const limit = Math.min(args.limit ?? DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT);
     return ok({
       count: all.length,
-      jobs: all.slice(0, 50).map((job) => ({
+      jobs: all.slice(0, limit).map((job) => ({
         job_id: job.job_id,
         status: job.status,
         created_at: job.created_at,
@@ -475,15 +493,15 @@ server.registerTool(
         task: String(job.task ?? "").slice(0, 160),
       })),
       workflow_count: flows.length,
-      workflows: flows.slice(0, 50).map((workflow) => ({
+      workflows: flows.slice(0, limit).map((workflow) => ({
         job_id: workflow.job_id,
         status: workflow.status,
         phase: workflow.phase,
         created_at: workflow.created_at,
         cwd: workflow.cwd ?? workflow.request?.cwd,
         counts: workflow.counts ?? null,
-        note: "Use dsh_get for per-task evidence; a snapshot is not a live controller.",
       })),
+      note: "Use dsh_get for a workflow's per-task evidence; a listed snapshot is not a live controller.",
     });
   },
 );
@@ -605,21 +623,16 @@ server.registerTool(
       still_running: stillRunning,
       note:
         stillRunning.length === 0
-          ? "Every watched job has settled, and each settled entry below is its complete final status, answer included. Nothing is left to fetch."
-          : "The settled entries are complete. Call dsh_wait_any again with the still_running ids, and do not start duplicates; " +
-            "dsh_get on one of them would only repeat this same answer at the cost of another round trip.",
+          ? "All settled; each entry is complete."
+          : "Settled entries are complete. Wait again on still_running; do not start duplicates.",
     };
     if (summarised.length > 0) {
       payload.settled_summarised = summarised;
-      payload.note_summarised =
-        `${summarised.length} settled job(s) exceeded the ${WAIT_ANY_MAX_CHARS}-character result ceiling and are listed as ids only. ` +
-        "They finished; read one with dsh_get when you need its detail.";
+      payload.note_summarised = `Past the ${WAIT_ANY_MAX_CHARS}-character ceiling these are listed as ids; read one with dsh_get.`;
     }
     if (trimmed > 0) {
       payload.answers_trimmed = trimmed;
-      payload.note_answers =
-        `${trimmed} answer(s) were trimmed to share one budget across ${done.length} settled jobs. ` +
-        "Each carries answer_path and answer_omitted; read one with dsh_get include_logs=true only if you need the rest.";
+      payload.note_answers = "Trimmed to share one budget; dsh_get with include_logs=true returns one whole.";
     }
     return ok(payload);
   },

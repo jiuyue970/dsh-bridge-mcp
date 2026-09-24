@@ -148,7 +148,7 @@ try {
     assert.equal(waited.settled[0].job_id, quick.job_id);
     assert.equal(waited.settled[0].answer, "A".repeat(12), "the finisher's answer is already here");
     assert.deepEqual(waited.still_running, [slow.job_id], "the unfinished job is named so it can be waited on again");
-    assert.match(waited.note, /dsh_wait_any again/, "the note points back at waiting, not at polling");
+    assert.match(waited.note, /Wait again on still_running/, "the note points back at waiting, not at polling");
     await call("dsh_cancel", { job_id: slow.job_id });
     console.log("ok - the first finisher arrives complete, and the rest are named for another wait");
   }
@@ -158,8 +158,8 @@ try {
     const job = await start({ ms: 60_000, chars: 5 });
     const waited = await call("dsh_wait", { job_id: job.job_id, max_wait_ms: 1_000 });
     assert.equal(waited.status, "running");
-    assert.match(waited.note, /Call dsh_wait again/, "the note must steer back to waiting");
-    assert.match(waited.note, /learns nothing new/, "and must say why polling does not help");
+    assert.match(waited.note, /Wait again/, "the note must steer back to waiting");
+    assert.match(waited.note, /dsh_get would only return this same payload/, "and must say why polling does not help");
     await call("dsh_cancel", { job_id: job.job_id });
     console.log("ok - an expired wait window steers back to waiting, not to polling");
   }

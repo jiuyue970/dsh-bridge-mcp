@@ -8,10 +8,13 @@ import {
   DEFAULT_DSH_BIN,
   DEFAULT_PROFILE,
   DEFAULT_TIMEOUT_MS,
+  DIAGNOSTIC_CHARS,
   isSystemJobId,
   JOB_ROOT,
   MAX_ANSWER_CHARS,
+  MAX_DIAGNOSTICS,
   MAX_OUTPUT_CHARS,
+  MAX_STDERR_CHARS,
 } from "./config.mjs";
 
 /** In-memory registry of live jobs. Persisted separately for cross-call reads. */
@@ -196,8 +199,9 @@ function appendBounded(job, channel, chunk) {
     job.stdout += text.slice(0, room);
     if (text.length > room) job.truncated = true;
   } else {
-    const room = Math.max(0, 20_000 - job.stderr.length);
-    if (room > 0) job.stderr += text.slice(0, room);
+    // The end of stderr, not the start: a failing worker's last line is the
+    // diagnostic that explains the failure, and it comes after the reasoning.
+    job.stderr = (job.stderr + text).slice(-MAX_STDERR_CHARS);
   }
 }
 
@@ -391,10 +395,38 @@ export function cancelJob(jobId) {
 }
 
 /**
- * Short factual status, omitting bulky fields unless asked.
+ * Diagnostic lines from a worker's stderr, without its reasoning.
+ *
+ * DSH headless streams the worker's reasoning to stderr as `dsh: reasoning:`
+ * blocks and reports a failed provider call as one `dsh: CODE: message` line.
+ * Over 1,310 job snapshots there were 7,551 reasoning blocks, and every other
+ * `dsh:` line was a PI_AI_ERROR or RATE_LIMIT report. The reasoning is the
+ * worker's own thinking and of no use to the caller; a diagnostic is the reason
+ * a job failed, which `error` alone ("exited with code 1") does not say.
+ * `reason` rather than `reasoning:` also rejects a block header cut short where
+ * the kept stream begins.
+ */
+export function extractDiagnostics(stderr) {
+  const lines = [];
+  for (const match of String(stderr ?? "").matchAll(/^dsh: (?!reason)(.+)$/gm)) {
+    const line = match[1].trim().slice(0, DIAGNOSTIC_CHARS);
+    if (line !== "" && !lines.includes(line)) lines.push(line);
+  }
+  return lines.slice(-MAX_DIAGNOSTICS);
+}
+
+/**
+ * Short factual status.
+ *
+ * Every field here is re-sent with each later request of the caller's
+ * conversation, so a field earns its place by telling the caller something:
+ * the working directory it chose itself is not repeated, and flags that are
+ * almost always false (`truncated`, `answer_truncated`) appear only when true.
+ * The worker's reasoning is never included; `dsh_tail` reads it.
  *
  * `answerLimit` lets a caller that is returning several jobs at once share one
  * budget between them; on its own a job gets the full `MAX_ANSWER_CHARS`.
+ * `includeLogs` returns the answer whole.
  */
 export function statusOf(job, { includeLogs = false, answerLimit = MAX_ANSWER_CHARS } = {}) {
   const out = {
@@ -404,18 +436,18 @@ export function statusOf(job, { includeLogs = false, answerLimit = MAX_ANSWER_CH
     created_at: job.created_at,
     ended_at: job.ended_at,
     exit_code: job.exit_code,
-    cwd: job.cwd,
-    output_chars: job.stdout.length,
-    truncated: job.truncated === true,
   };
   if (job.error) out.error = job.error;
+  const diagnostics = extractDiagnostics(job.stderr);
+  if (diagnostics.length > 0) out.diagnostics = diagnostics;
+  // Output capture hit MAX_OUTPUT_CHARS: rare, so only reported when it happened.
+  if (job.truncated === true) out.truncated = true;
 
   const limit = Math.max(0, Math.min(answerLimit, MAX_ANSWER_CHARS));
   const answer = extractAnswer(job.stdout);
   out.answer_chars = answer.length;
   if (includeLogs || answer.length <= limit) {
     out.answer = answer;
-    out.answer_truncated = false;
   } else {
     out.answer = answer.slice(0, limit);
     out.answer_truncated = true;
@@ -424,9 +456,6 @@ export function statusOf(job, { includeLogs = false, answerLimit = MAX_ANSWER_CH
     out.answer_note =
       "Answer trimmed for the caller's context. Re-read with include_logs=true, " +
       "or read the stdout field of answer_path for the whole text.";
-  }
-  if (includeLogs) {
-    out.stderr = job.stderr.slice(-2_000);
   }
   return out;
 }
