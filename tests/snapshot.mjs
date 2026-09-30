@@ -126,7 +126,10 @@ try {
 
   // An unknown id is simply absent, not an exception.
   assert.equal(readWorkflow("no-such-workflow-id").workflow, undefined);
-  assert.ok(Array.isArray(listWorkflows()), "listing must always return an array");
+  assert.ok(
+    Array.isArray(await listWorkflows()),
+    "listing must always resolve to an array",
+  );
 
   // 5) A caller-supplied id is joined into a snapshot path, so an id that is not
   // a system UUID is refused before the join. This is a pure shape check: no

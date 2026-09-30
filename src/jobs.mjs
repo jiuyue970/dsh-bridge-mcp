@@ -1,7 +1,10 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
+import { invalidate, listRows } from "./jobindex.mjs";
+import { arm, awaitSettlement } from "./settle.mjs";
 import {
   CREDENTIAL_ENV_ALLOWLIST,
   CREDENTIAL_ENV_PATTERN,
@@ -44,6 +47,24 @@ function ensureJobRoot() {
   mkdirSync(JOB_ROOT, { recursive: true });
 }
 
+/** Create the job root without blocking. Used by the paths that already await. */
+async function ensureJobRootAsync() {
+  try {
+    await mkdir(JOB_ROOT, { recursive: true });
+  } catch {
+    // A listing over a missing root simply has nothing to list.
+  }
+}
+
+/**
+ * The fields a job snapshot contributes to a listing and to a prune.
+ *
+ * Deliberately not the whole snapshot: stdout and stderr are the bulk of these
+ * files and neither path needs them. The index keeps only these, so caching a
+ * few thousand jobs costs a few hundred kilobytes instead of 59 MB.
+ */
+const JOB_ROW_FIELDS = ["job_id", "status", "task", "cwd", "created_at", "ended_at"];
+
 /** Persist a compact job snapshot. Never throws: persistence is best-effort. */
 function persist(job) {
   try {
@@ -62,7 +83,11 @@ function persist(job) {
       stderr: job.stderr,
       truncated: job.truncated,
     };
-    writeFileSync(join(JOB_ROOT, `${job.job_id}.json`), JSON.stringify(snapshot));
+    const name = `${job.job_id}.json`;
+    writeFileSync(join(JOB_ROOT, name), JSON.stringify(snapshot));
+    // This process just rewrote the file, so any row a listing cached for it is
+    // stale even if the filesystem's mtime resolution cannot see the change.
+    invalidate(JOB_ROOT, name);
   } catch {
     // A read-only or full temp dir must not fail the delegation itself.
   }
@@ -99,23 +124,30 @@ export function readJobLive(jobId) {
   return jobs.get(jobId);
 }
 
-export function listJobs() {
+/**
+ * Every job this bridge knows about, newest first, as a list row.
+ *
+ * Rows carry only what a listing shows and what a prune needs, and they are read
+ * through the shared index, so an unchanged snapshot costs one stat instead of a
+ * read and a parse. A live job this process owns overrides the row on disk,
+ * which is the same precedence the previous full-snapshot merge had.
+ */
+export async function listJobs() {
+  await ensureJobRootAsync();
   const seen = new Map();
-  try {
-    ensureJobRoot();
-    for (const name of readdirSync(JOB_ROOT)) {
-      if (!name.endsWith(".json")) continue;
-      try {
-        const snap = JSON.parse(readFileSync(join(JOB_ROOT, name), "utf8"));
-        seen.set(snap.job_id, snap);
-      } catch {
-        // Skip an unreadable snapshot rather than failing the whole listing.
-      }
-    }
-  } catch {
-    // Fall through to whatever is in memory.
+  for (const { row } of await listRows(JOB_ROOT, JOB_ROW_FIELDS)) {
+    seen.set(row.job_id, row);
   }
-  for (const [id, job] of jobs) seen.set(id, job);
+  for (const [id, job] of jobs) {
+    seen.set(id, {
+      job_id: id,
+      status: job.status,
+      task: job.task,
+      cwd: job.cwd,
+      created_at: job.created_at,
+      ended_at: job.ended_at,
+    });
+  }
   return [...seen.values()].sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
 }
 
@@ -131,7 +163,11 @@ export async function waitJob(jobId, maxWaitMs) {
   let current = readJob(jobId);
   if (current === undefined) return { settled: false, job: undefined };
   while (current.status === "running" && Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, Math.min(250, Math.max(25, deadline - Date.now()))));
+    // Wake on the child's close, so a caller pays the real remaining time rather
+    // than up to a quarter of a second more. The cap is kept because this loop
+    // also has to re-check a job that is live but not tracked here, and because
+    // the deadline still has to be noticed.
+    await awaitSettlement(jobId, Math.min(250, Math.max(25, deadline - Date.now())));
     current = readJob(jobId) ?? current;
   }
   return { settled: current.status !== "running", job: current };
@@ -144,41 +180,33 @@ export async function waitJob(jobId, maxWaitMs) {
  * a later process has of it. The caller decides whether to apply the deletion,
  * because losing evidence is worse than keeping bytes.
  */
-export function pruneJobState({ olderThanMs, apply = false, now = Date.now() } = {}) {
+export async function pruneJobState({ olderThanMs, apply = false, now = Date.now() } = {}) {
   const cutoff = now - olderThanMs;
   const removable = [];
   let kept = 0;
   let bytes = 0;
-  try {
-    ensureJobRoot();
-    for (const name of readdirSync(JOB_ROOT)) {
-      if (!name.endsWith(".json")) continue;
-      const path = join(JOB_ROOT, name);
-      let snap;
-      let size = 0;
-      try {
-        size = statSync(path).size;
-        snap = JSON.parse(readFileSync(path, "utf8"));
-      } catch {
-        continue;
-      }
-      const ended = snap.ended_at === null || snap.ended_at === undefined ? null : Date.parse(snap.ended_at);
-      const settled = snap.status !== "running" && ended !== null && !Number.isNaN(ended);
-      if (!settled || ended > cutoff || jobs.get(snap.job_id)?.status === "running") {
-        kept += 1;
-        continue;
-      }
-      removable.push({ job_id: snap.job_id, ended_at: snap.ended_at, bytes: size });
-      bytes += size;
+  await ensureJobRootAsync();
+  // Same index a listing uses: a prune reads every snapshot, so it was paying
+  // the identical 59 MB on every dry run.
+  for (const entry of await listRows(JOB_ROOT, JOB_ROW_FIELDS)) {
+    const snap = entry.row;
+    const ended = snap.ended_at === null || snap.ended_at === undefined ? null : Date.parse(snap.ended_at);
+    const settled = snap.status !== "running" && ended !== null && !Number.isNaN(ended);
+    if (!settled || ended > cutoff || jobs.get(snap.job_id)?.status === "running") {
+      kept += 1;
+      continue;
     }
-  } catch {
-    // An unreadable job root simply means there is nothing to prune.
+    removable.push({ job_id: snap.job_id, ended_at: snap.ended_at, bytes: entry.size });
+    bytes += entry.size;
   }
   let removed = 0;
   if (apply) {
     for (const entry of removable) {
+      const name = `${entry.job_id}.json`;
       try {
-        rmSync(join(JOB_ROOT, `${entry.job_id}.json`));
+        rmSync(join(JOB_ROOT, name));
+        // A row for a file this process just deleted must never be served again.
+        invalidate(JOB_ROOT, name);
         removed += 1;
       } catch {
         // Leave a file we cannot delete; the report still names it.
@@ -255,6 +283,12 @@ export function startJob({ task, cwd, timeoutMs, dshBin, profile, deadlineAt }) 
   jobs.set(jobId, job);
   persist(job);
 
+  // Waiters stop polling the moment this job settles, rather than up to a
+  // polling interval later. The release is kept on the job so cancelJob can
+  // release it too: a cancelled job is settled the moment the request lands.
+  const settled = arm(jobId);
+  job.releaseWaiters = settled;
+
   let proc;
   try {
     proc = spawn(bin, args, { cwd: resolvedCwd, env: childEnv(), stdio: ["ignore", "pipe", "pipe"] });
@@ -263,6 +297,7 @@ export function startJob({ task, cwd, timeoutMs, dshBin, profile, deadlineAt }) 
     job.error = `spawn failed: ${error.message}`;
     job.ended_at = new Date().toISOString();
     persist(job);
+    settled();
     return job;
   }
   job.pid = proc.pid;
@@ -303,6 +338,7 @@ export function startJob({ task, cwd, timeoutMs, dshBin, profile, deadlineAt }) 
     job.error = `process error: ${error.message}`;
     job.ended_at = new Date().toISOString();
     persist(job);
+    settled();
   });
 
   /**
@@ -345,6 +381,7 @@ export function startJob({ task, cwd, timeoutMs, dshBin, profile, deadlineAt }) 
     }
     persist(job);
     jobs.set(jobId, job);
+    settled();
   });
 
   return job;
@@ -391,6 +428,9 @@ export function cancelJob(jobId) {
   job.error = "cancelled by request";
   job.ended_at = new Date().toISOString();
   persist(job);
+  // The cancellation is recorded, so anyone waiting on this job has their answer
+  // now; whether the process actually dies is not what they asked for.
+  job.releaseWaiters?.();
   return { cancelled: true, pid: job.pid ?? null, signal: "SIGTERM" };
 }
 

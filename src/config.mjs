@@ -29,7 +29,7 @@ export const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
 export const MAX_FOREGROUND_WAIT_CAP_MS = 10 * 60 * 1000;
 
 /**
- * Default window for `dsh_wait`.
+ * Default window for `dsh_wait` and `dsh_wait_any`.
  *
  * Every poll is a full round trip that re-sends the caller's whole
  * conversation, so a short window is the dominant cost of delegation, not a
@@ -37,8 +37,15 @@ export const MAX_FOREGROUND_WAIT_CAP_MS = 10 * 60 * 1000;
  * idle polls across 2,997 jobs, and `dsh_wait` accounted for 67.5% of the
  * caller's token usage. A 300-second window removes about 89% of those idle
  * polls while still returning the moment a job settles.
+ *
+ * The default is 240 s, deliberately under the outer 300-second MCP
+ * `tools/call` timeout, so a wait comes back before the caller's transport
+ * gives up. It is a polling window, never a task deadline: `dsh_wait` and
+ * `dsh_wait_any` return the instant a job settles, so a long window costs
+ * nothing when work finishes early. An explicit `max_wait_ms` still overrides
+ * it, bounded by the unchanged `MAX_FOREGROUND_WAIT_CAP_MS`.
  */
-export const DEFAULT_WAIT_WINDOW_MS = 5 * 60 * 1000;
+export const DEFAULT_WAIT_WINDOW_MS = 4 * 60 * 1000;
 
 /**
  * How long `dsh_start` may hold the call open before handing back a job id.
@@ -200,8 +207,40 @@ export const MAX_WORKFLOW_TIMEOUT_MS = 6 * 60 * 60 * 1000;
  * never produced a plan never dispatched a worker. Measured on 2026-09-20/21:
  * six of fourteen failed workflows ended exactly at the previous 20-minute
  * ceiling, having produced nothing.
+ *
+ * The planner prompt also states a bounded investigation (at most 10 file reads
+ * and 15 tool calls), but that budget is instruction-only: no code counts steps
+ * or tool calls. This fixed wall-clock deadline is the enforced backstop that
+ * cuts off a planner which overruns it.
  */
-export const DEFAULT_PLANNING_TIMEOUT_MS = 40 * 60 * 1000;
+export const DEFAULT_PLANNING_TIMEOUT_MS = 10 * 60 * 1000;
+
+/**
+ * Whether a workflow starts a planning worker before its task workers.
+ *
+ * The planner is a whole DSH run whose only output is a JSON plan, so it is a
+ * full extra round trip of serial latency in front of every workflow. Measured
+ * over 672 recorded planners: p50 155 s, p90 387 s — indistinguishable from an
+ * ordinary worker job (p50 154 s) — and 35.8 hours of compute spent in total.
+ * A live trivial read-only objective spent 19.1 s of its 35.1 s (54%) planning.
+ *
+ * That cost bought almost nothing: 477 of the 595 recorded plans (80.2%) held a
+ * *single* task, 106 workflows produced no task at all, and 251 (37%) produced
+ * no successful task. The length of the objective does not predict which case it
+ * is (one-task rate 70/86/81/78% across the four length buckets), and no lexical
+ * signal recovered both halves of that split, so this is a caller decision
+ * rather than a guess made here.
+ *
+ * It defaults to false: the caller already supplies the complete objective, and
+ * a single worker given that objective does what the one-task plan would have
+ * told it to do. A misjudgement here is recoverable — one worker does the work
+ * serially, exactly as `dsh_start` would — whereas the reverse spends 155 s on
+ * a plan that says "one task". Pass `decompose: true` to plan first.
+ */
+export const DEFAULT_DECOMPOSE = false;
+
+/** Task id used by a plan this bridge synthesised rather than asked for. */
+export const SYNTHESIZED_TASK_ID = "objective";
 
 /** Characters of a finished worker's answer kept as downstream context. */
 export const MAX_DEPENDENCY_CONTEXT_CHARS = 4_000;

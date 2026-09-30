@@ -67,11 +67,45 @@ codex mcp list | grep dsh-bridge
 | `dsh_list` | List known jobs and workflows |
 | `dsh_prune` | Report, and optionally delete, finished bridge state |
 
+Route by shape: a single clear objective — even one that spans several files or
+needs code reading — belongs to `dsh_start` with `wait_for_ms`. Reach for
+`dsh_delegate` only when the request genuinely contains independent subtasks that
+need dependency or parallel orchestration.
+
 ### `dsh_delegate` — the managed workflow
 
-One call owns a complete objective. It starts a read-only DSH planner, validates
-the plan **in code**, asks TypeSafe how many safe tasks to start at once, runs one
-DSH worker per task, and finishes in `awaiting_review`.
+One call owns a complete objective. It builds the plan, validates it **in code**,
+asks TypeSafe how many safe tasks to start at once, runs one DSH worker per task,
+and finishes in `awaiting_review`.
+
+**By default no planning worker is started.** The plan is built in code from what
+the caller already passed — the objective, the mode and the allowed paths — as a
+single task. The planner is a whole DSH run whose only output is a JSON plan, so
+starting one is a full extra *serial* round trip in front of the work. Measured
+over 672 recorded planners: **p50 155 s, p90 387 s**, indistinguishable from an
+ordinary worker job (p50 154 s), and 35.8 hours of compute spent in total. A live
+trivial read-only objective spent 19.1 s of its 35.1 s (54%) planning. That cost
+bought little: **477 of 595 recorded plans (80.2%) held a single task**, 106
+workflows produced no task at all, and 251 (37%) produced no successful task.
+After this change the same workflow finished in 16.0 s.
+
+Pass `decompose=true` to plan first. One case still plans on its own: a
+`workspace-write` workflow whose `allowed_paths` is the bare `"."` default, because
+`validatePlan` refuses a task that declares the whole cwd as its write path and
+there is no honest subpath without reconnaissance. The status read reports which
+path was taken through `plan_source` (`"code"` or `"planner"`).
+
+The asymmetry is deliberate. Leaving `decompose` off for an objective that really
+did need splitting is recoverable — one worker does the work serially, exactly as
+`dsh_start` would — whereas the reverse spends 155 s on a plan that says "one
+task". It is a caller decision rather than a guess made here, because the split is
+not lexically detectable: the one-task rate was 70/86/81/78% across the four
+objective-length buckets, and no lexical signal recovered both halves of it.
+
+When a planner *is* started it carries an instruction-only investigation budget:
+the prompt asks for at most 10 bounded file reads and 15 tool calls, and nothing
+in the code counts them. The enforced backstop is a 10-minute planning wall-clock
+deadline (`DEFAULT_PLANNING_TIMEOUT_MS`), which cuts off a planner that overruns.
 
 ```
 dsh_delegate(
@@ -79,8 +113,9 @@ dsh_delegate(
   cwd="/repo",                       # required, absolute
   mode="workspace-write",            # or "read-only"
   allowed_paths=["src", "tests"],    # optional, relative to cwd; default project root
-  timeout_ms=3600000)                # total deadline for planning + all tasks
-  -> { job_id: "...", kind: "workflow", status: "planning" }
+  timeout_ms=3600000,                # total deadline for planning + all tasks
+  decompose=false)                   # true = plan with an extra DSH worker first
+  -> { job_id: "...", kind: "workflow", status: "executing" }
 ```
 
 Phases: `planning` -> `judging` -> `executing` -> `awaiting_review`
@@ -103,7 +138,7 @@ dsh_start(task="Add input validation to src/api.ts and run the tests",
 
 dsh_delegate(task="...", cwd="/repo", mode="workspace-write", tier="build")
   -> { job_id: "..." }
-dsh_wait(job_id="...", max_wait_ms=300000)
+dsh_wait(job_id="...", max_wait_ms=240000)
   -> { status: "awaiting_review", counts: {...}, children: [...] }
 ```
 
@@ -116,8 +151,10 @@ caller's token cost. Three parameters exist for that reason:
 - **`wait_for_ms` on `dsh_start`** holds the call open briefly and returns the
   finished result inline. Short jobs are the common case, and this collapses the
   usual start-then-poll pair into one round trip.
-- **`max_wait_ms` on `dsh_wait`** defaults to 300000. Prefer one long window over
-  several short ones; the call still returns the moment the job settles.
+- **`max_wait_ms` on `dsh_wait`** defaults to 240000, deliberately under the outer
+  300 s MCP `tools/call` timeout. A job still running when the window closes is
+  waited on again with the same window; an explicit `max_wait_ms` still overrides
+  it, and the call returns the moment the job settles.
 - **`dsh_wait_any`** watches a whole parallel set with one call. Without it, N
   parallel jobs cost N polling chains to learn the same thing.
 
@@ -170,6 +207,56 @@ workflow's full detail) and nothing else, which cut those reads by 27.5%.
 `dsh_tail` is where the reasoning is read — the only sign of progress while a
 job runs — and caps each stream at 8000 characters. `dsh_list` returns 20 rows
 per list by default (`limit`, up to 50); its counts cover everything.
+
+Listing and pruning read the snapshot directories through a shared index
+(`jobindex.mjs`) keyed by each file's mtime and size. A listing `stat`s every
+entry, reuses the row for anything unchanged, and reads only what actually moved;
+the same index serves a prune, which was paying the identical cost on every dry
+run. Both run off the event loop, so a listing can no longer stall the
+single-threaded server behind it. Measured on this machine over 2,675 job
+snapshots: `stat` on all of them costs 5.8 ms, reading them costs 1,802 ms, and
+the parse only ~170 ms of that — the cost was the I/O, and none of it changes
+unless the file does. A `dsh_list` that used to block for 1,400 ms every call
+now costs ~350 ms on the first call in a process and ~18 ms on every later one,
+and a cheap call queued behind it no longer waits at all.
+
+### What the descriptions cost
+
+Nine tool descriptions are re-sent with **every** request, so their cost scales
+with conversation length rather than with how often a tool is actually used. That
+makes them the one part of this bridge where an extra sentence has a permanent
+price, and it is a price nothing else reports: no test fails when it is paid.
+
+So one does. `tests/schema-budget.mjs` sums every description and input schema
+and fails past a budget, and prints the split so the growth is visible when it
+happens. The rule applied when the descriptions were cut was to keep what changes
+what a caller does and cut what only explains why the bridge is built that way:
+defaults, caps, enums, `awaiting_review` not being acceptance, `mode` not
+narrowing a profile's network tools, and the fact that a bare `"."` cannot be a
+workspace-write scope all stayed. Measured history, architecture narrative and
+restated rationale went.
+
+| | chars | ~tokens |
+|---|---|---|
+| before | 10,279 | 2,570 |
+| after | 8,138 | 2,035 |
+
+Of the remaining total, ~3,000 chars are JSON structure — types, enums,
+`required`, `additionalProperties`, and the `$schema` URL the SDK adds — which
+is what the tools need to be validated at all.
+
+### Waiting
+
+`dsh_wait` and `dsh_wait_any` used to poll on a 250 ms cadence, so a wait came
+back up to a quarter second *after* the work it was waiting for had actually
+finished — once per hop. Settlement is an event, so waits now end with the work:
+a job settles on its child's `close`, a cancellation is recorded when it is
+requested, and a workflow ends in one place that both its success and failure
+paths go through. Measured over 30 runs of a 137 ms worker, the gap between the
+job's own `ended_at` and the wait returning fell from a 39 ms mean (max 251 ms) to
+0.4 ms (max 3 ms). The deadline cap is still there, because a wait on something
+this process does not own can only end when the window closes.
+
 ### Reclaiming disk
 
 Every delegation leaves a snapshot, and a workflow also leaves an artifact
@@ -474,6 +561,10 @@ injected, so scheduling decisions are deterministic.
 | `tests/optimizations.mjs` | inline return, background fallback, first-finisher waiting, timeout tiers, measured defaults, prune rules, answer bound |
 | `tests/wait-any.mjs` | end-to-end over stdio: a settled job returns exactly what `dsh_get` returns, failures carry their reason, the shared answer budget, first-finisher semantics, notes that steer away from polling, unknown ids |
 | `tests/payload.mjs` | end-to-end over stdio: failure diagnostics by default and kept from the end of stderr, reasoning never in a reply, `include_logs` returns the whole answer only, omitted fields, compact JSON, `dsh_tail` cap, bounded `dsh_list` |
+| `tests/planning-prefix.mjs` | the code-synthesised plan: no planner is started where a plan can be built, the write scope is the caller's grant, a bare-dot scope still plans and says why, `decompose:true` reaches the planner, the objective reaches the worker verbatim |
+| `tests/schema-budget.mjs` | the tool schemas stay inside their re-sent-per-request budget, and every tool still carries a real description |
+| `tests/settlement.mjs` | waiting ends with the work: a live job is armed, every settlement path (done, failed, cancelled) releases, an untracked subject keeps its own cadence instead of spinning, a wait loop over a set keeps waiting after one member finishes, a late waiter is told at once, and a successful workflow releases its waiters |
+| `tests/job-index.mjs` | the snapshot index: only requested fields are cached, a changed snapshot is re-read rather than served stale, explicit invalidation wins at identical size, corrupt and deleted files are skipped, and the real listing plus the dry and applied prunes agree with disk |
 | `tests/session-boundary.mjs` | hook gates (history, context size, confidence, cooldown), fail-open paths, bounded data sent out, transcript tail reading, process exit behaviour without a key |
 
 -----
@@ -488,6 +579,8 @@ src/plan.mjs             plan validation, scheduling and overlap policy
 src/choices.mjs          TypeSafe judgment and credential handling
 src/evidence.mjs         worker evidence contract and grading
 src/jobs.mjs             job lifecycle, spawning, persistence
+src/jobindex.mjs         cached async reader for the snapshot directories
+src/settle.mjs           settlement promises, so waits end with the work
 src/config.mjs           constants and environment policy
 hooks/session-boundary.mjs  optional Codex hook: suggest /new at task boundaries
 docs/implementation.md   how the workflow is wired, end to end

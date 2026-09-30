@@ -1,13 +1,18 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdir, readdir, stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
+import { invalidate, listRows } from "./jobindex.mjs";
+import { arm, awaitSettlement } from "./settle.mjs";
 import {
+  DEFAULT_DECOMPOSE,
   DEFAULT_PLANNING_TIMEOUT_MS,
   DEFAULT_PROFILE,
   DEFAULT_WORKFLOW_TIMEOUT_MS,
   MAX_ARTIFACT_ANSWER_CHARS,
   MAX_DEPENDENCY_CONTEXT_CHARS,
   MAX_WORKFLOW_TIMEOUT_MS,
+  SYNTHESIZED_TASK_ID,
   isSystemJobId,
   WORKFLOW_ROOT,
 } from "./config.mjs";
@@ -43,6 +48,23 @@ import {
 
 /** Live parent workflows owned by this process. */
 const workflows = new Map();
+
+/**
+ * The fields a workflow snapshot contributes to a listing and to a prune.
+ *
+ * The bounded per-child evidence is deliberately excluded: a listing shows counts
+ * and identity, a prune needs when the workflow ended, and the child detail
+ * behind both is already reachable through dsh_get.
+ */
+const WORKFLOW_ROW_FIELDS = [
+  "job_id",
+  "status",
+  "phase",
+  "created_at",
+  "ended_at",
+  "cwd",
+  "counts",
+];
 
 /** Injected seams for offline testing. */
 const deps = {
@@ -85,6 +107,8 @@ function persist(workflow) {
       ended_at: workflow.ended_at,
       error: workflow.error,
       plan_summary: workflow.plan === null ? null : planSummary(workflow.plan),
+      plan_source: workflow.plan_source ?? null,
+      plan_note: workflow.plan_note ?? null,
       children: (workflow.children ?? []).map(compactChild),
       decisions: workflow.decisions,
       // The full cancellation report is the record of what was signalled; the
@@ -94,7 +118,11 @@ function persist(workflow) {
       counts: countOutcomes(workflow),
       artifact_path: workflow.artifact_path,
     };
-    writeFileSync(join(WORKFLOW_ROOT, `${workflow.job_id}.json`), JSON.stringify(snapshot));
+    const name = `${workflow.job_id}.json`;
+    writeFileSync(join(WORKFLOW_ROOT, name), JSON.stringify(snapshot));
+    // This process just rewrote the snapshot, so a cached row for it is stale
+    // even when the filesystem's mtime resolution cannot see the change.
+    invalidate(WORKFLOW_ROOT, name);
   } catch {
     // Persistence is best-effort; a full or read-only temp dir must not abort work.
   }
@@ -195,57 +223,61 @@ export function readWorkflow(workflowId) {
  * for the deletion, and a workflow still live in this process is never a
  * candidate no matter how old its snapshot looks.
  */
-export function pruneWorkflowState({ olderThanMs, apply = false, now = Date.now() } = {}) {
+export async function pruneWorkflowState({ olderThanMs, apply = false, now = Date.now() } = {}) {
   const cutoff = now - olderThanMs;
   const removable = [];
   let kept = 0;
   let bytes = 0;
-  const dirBytes = (dir) => {
-    let total = 0;
+  // Artifact bytes are only summed for a workflow that already looks removable,
+  // and they are summed off the event loop: a dry run used to stat every
+  // artifact directory of every settled workflow synchronously.
+  const dirBytes = async (dir) => {
+    let names;
     try {
-      for (const name of readdirSync(dir)) {
-        try {
-          total += statSync(join(dir, name)).size;
-        } catch {
-          // A vanished file contributes nothing.
-        }
-      }
+      names = await readdir(dir);
     } catch {
       // No artifact directory for this workflow.
+      return 0;
     }
-    return total;
+    const sizes = await Promise.all(
+      names.map(async (name) => {
+        try {
+          return (await stat(join(dir, name))).size;
+        } catch {
+          // A vanished file contributes nothing.
+          return 0;
+        }
+      }),
+    );
+    return sizes.reduce((total, size) => total + size, 0);
   };
+
   try {
-    mkdirSync(WORKFLOW_ROOT, { recursive: true });
-    for (const name of readdirSync(WORKFLOW_ROOT)) {
-      if (!name.endsWith(".json")) continue;
-      const path = join(WORKFLOW_ROOT, name);
-      let snap;
-      let size = 0;
-      try {
-        size = statSync(path).size;
-        snap = JSON.parse(readFileSync(path, "utf8"));
-      } catch {
-        continue;
-      }
-      const ended = snap.ended_at ? Date.parse(snap.ended_at) : NaN;
-      if (Number.isNaN(ended) || ended > cutoff || workflows.get(snap.job_id)?.ended_at == null) {
-        kept += 1;
-        continue;
-      }
-      const artifacts = dirBytes(join(WORKFLOW_ROOT, snap.job_id));
-      removable.push({ job_id: snap.job_id, ended_at: snap.ended_at, bytes: size + artifacts });
-      bytes += size + artifacts;
-    }
+    await mkdir(WORKFLOW_ROOT, { recursive: true });
   } catch {
-    // Nothing to prune if the workflow root cannot be read.
+    // Nothing to prune if the workflow root cannot be created.
+    return { eligible: 0, bytes: 0, kept: 0, removed: 0, applied: apply === true };
+  }
+  for (const entry of await listRows(WORKFLOW_ROOT, WORKFLOW_ROW_FIELDS)) {
+    const snap = entry.row;
+    const ended = snap.ended_at ? Date.parse(snap.ended_at) : NaN;
+    if (Number.isNaN(ended) || ended > cutoff || workflows.get(snap.job_id)?.ended_at == null) {
+      kept += 1;
+      continue;
+    }
+    const artifacts = await dirBytes(join(WORKFLOW_ROOT, snap.job_id));
+    removable.push({ job_id: snap.job_id, ended_at: snap.ended_at, bytes: entry.size + artifacts });
+    bytes += entry.size + artifacts;
   }
   let removed = 0;
   if (apply) {
     for (const entry of removable) {
+      const name = `${entry.job_id}.json`;
       try {
-        rmSync(join(WORKFLOW_ROOT, `${entry.job_id}.json`));
+        rmSync(join(WORKFLOW_ROOT, name));
         rmSync(join(WORKFLOW_ROOT, entry.job_id), { recursive: true, force: true });
+        // Neither the row nor its artifact bytes may be reported again.
+        invalidate(WORKFLOW_ROOT, name);
         removed += 1;
       } catch {
         // Report it even when the filesystem refuses.
@@ -255,21 +287,20 @@ export function pruneWorkflowState({ olderThanMs, apply = false, now = Date.now(
   return { eligible: removable.length, bytes, kept, removed, applied: apply === true };
 }
 
-export function listWorkflows() {
-  const found = [];
+/**
+ * Every workflow this bridge knows about, newest first, as a list row.
+ *
+ * Read through the shared index, so an unchanged snapshot costs one stat rather
+ * than a read and a parse. A live workflow this process owns is still added when
+ * its snapshot is missing, which is the precedence the previous full read had.
+ */
+export async function listWorkflows() {
   try {
-    ensureRoot();
-    for (const name of readdirSync(WORKFLOW_ROOT)) {
-      if (!name.endsWith(".json")) continue;
-      try {
-        found.push(JSON.parse(readFileSync(join(WORKFLOW_ROOT, name), "utf8")));
-      } catch {
-        // Skip an unreadable snapshot instead of failing the listing.
-      }
-    }
+    await mkdir(WORKFLOW_ROOT, { recursive: true });
   } catch {
     // Fall through to in-memory entries.
   }
+  const found = (await listRows(WORKFLOW_ROOT, WORKFLOW_ROW_FIELDS)).map((entry) => entry.row);
   for (const workflow of workflows.values()) {
     if (!found.some((entry) => entry.job_id === workflow.job_id)) {
       found.push(persistShape(workflow));
@@ -329,6 +360,13 @@ function planningPrompt(request) {
     "- Each task must be self-contained: a different worker with no memory of this conversation must be able to complete it from its text plus the repository.",
     "- Each task must state its own boundaries and how the worker should verify it.",
     "- Declare read_paths and write_paths per task. Two tasks that might run at the same time must not declare overlapping paths unless both only read them.",
+    "",
+    "## Investigation budget",
+    "- Do the MINIMUM reconnaissance needed to split the objective: enough to name the files each task must read and to spot two concurrent tasks that would write the same path. Nothing more.",
+    "- Do NOT do the work. No full diagnosis, no reproducing a bug, no running the test suite, no implementing a change, and no reading a file end to end when a targeted search answers the question.",
+    "- Do NOT traverse session logs, job history, git history, or the repository as a whole, and do not sweep directories for context; read only the files a task's own text genuinely needs.",
+    "- Budget: at most 10 bounded file reads and 15 tool calls in total. When the budget is spent, emit the best plan you can from what you already have instead of investigating further.",
+    "- Prefer the cheapest tool that answers the question (a targeted search over reading a whole file). If the information is not enough to split the objective safely, emit a single worker task and say in its text what still needs checking.",
     "",
     "## Output",
     "Your entire final message must be one JSON object and nothing else. Start it with { and end it with }.",
@@ -412,7 +450,7 @@ function executionPrompt({ request, plan, task, answers }) {
  * Returns immediately with the parent job id; all phases run in the background
  * so the MCP call never blocks for the length of the delivery.
  */
-export function startWorkflow({ task, cwd, mode, allowedPaths, timeoutMs, profile, dshBin }) {
+export function startWorkflow({ task, cwd, mode, allowedPaths, timeoutMs, profile, dshBin, decompose }) {
   if (typeof task !== "string" || task.trim() === "") {
     throw new Error("task must be a non-empty string");
   }
@@ -462,8 +500,11 @@ export function startWorkflow({ task, cwd, mode, allowedPaths, timeoutMs, profil
       timeout_ms: bounded,
       profile,
       dsh_bin: dshBin,
+      decompose: decompose === undefined ? DEFAULT_DECOMPOSE : decompose === true,
     },
     plan: null,
+    plan_source: null,
+    plan_note: null,
     plan_job_id: null,
     planner_job_id: null,
     children: [],
@@ -475,6 +516,8 @@ export function startWorkflow({ task, cwd, mode, allowedPaths, timeoutMs, profil
     timer: undefined,
   };
   workflows.set(workflowId, workflow);
+  // Waiting on a workflow waits for this signal rather than for a poll.
+  workflow.releaseWaiters = arm(workflowId);
   persist(workflow);
 
   runWorkflow(workflow).catch((error) => {
@@ -505,6 +548,9 @@ function settle(workflow, status, error = null) {
   }
   workflow.abort_controller = undefined;
   persist(workflow);
+  // Anyone waiting on this workflow has its answer now. This is the event the
+  // waiting loops were polling for, at most a quarter second later.
+  workflow.releaseWaiters?.();
 }
 
 function remainingMs(workflow) {
@@ -582,7 +628,9 @@ async function awaitWorker(workflow, child) {
       persist(workflow);
       return;
     }
-    await sleep(Math.min(250, Math.max(25, remainingMs(workflow))));
+    // Wake when this worker settles, so grading starts the moment its stdio is
+    // closed. The cap keeps the cancel and deadline checks on their old cadence.
+    await awaitSettlement(child.job_id, Math.min(250, Math.max(25, remainingMs(workflow))));
   }
 }
 
@@ -636,6 +684,96 @@ function chooserState(workflow, options) {
 }
 
 /**
+ * Build a one-task plan from what the caller already stated.
+ *
+ * Returns null when no valid plan can be built without reconnaissance. The
+ * synthesised plan is deliberately handed to `validatePlan` like any planner
+ * output, so the mode, scope, credential and containment rules are unchanged
+ * and this path cannot authorise anything a planner could not.
+ *
+ * The one case it cannot cover is a write scope of `.`: `validatePlan` rejects
+ * a task that declares the whole cwd as a write path, because naming the
+ * subpaths a task touches is what a plan is for. Without reconnaissance there is
+ * no honest answer, so that workflow plans first, exactly as before.
+ */
+function synthesisePlan(workflow) {
+  const request = workflow.request;
+  const scope = request.allowed_paths;
+
+  const writePaths = request.mode === "read-only" ? [] : scope.filter((path) => path !== ".");
+  if (request.mode === "workspace-write" && writePaths.length === 0) {
+    return { plan: null, reason: `write scope "${scope.join(", ")}" names no subpath to write inside` };
+  }
+
+  return {
+    plan: {
+      tasks: [
+        {
+          id: SYNTHESIZED_TASK_ID,
+          task: request.task.trim(),
+          // Reads are bounded by the cwd, not by the write grant: a worker has to
+          // be able to look at a definition before it can scope its own change.
+          read_paths: scope.length > 0 ? [...scope] : ["."],
+          write_paths: writePaths,
+          depends_on: [],
+          acceptance: null,
+        },
+      ],
+    },
+    reason: null,
+  };
+}
+
+/**
+ * Obtain the plan for one workflow, planning only when it is asked for.
+ *
+ * Returns the raw plan, or null when the workflow has already settled. The
+ * source is recorded on the workflow and in the snapshot, so a reader can always
+ * tell a plan the bridge built from the caller's own words apart from one a
+ * model produced.
+ */
+async function acquirePlan(workflow) {
+  if (workflow.request.decompose !== true) {
+    const synthesised = synthesisePlan(workflow);
+    if (synthesised.plan !== null) {
+      workflow.plan_source = "code";
+      workflow.plan_note = "single-task plan built from the caller's objective; no planner was started";
+      workflow.status = "executing";
+      return synthesised.plan;
+    }
+    workflow.plan_note = `planner started: ${synthesised.reason}`;
+  }
+  workflow.plan_source = "planner";
+
+  const planJob = startPlanner(workflow);
+  if (planJob === null) return null;
+
+  const finishedPlan = await awaitPlanner(workflow, planJob);
+  if (finishedPlan === null) return null;
+  // Planning can take minutes; a cancel or an expired deadline that landed while
+  // it ran must not be overwritten by a "finished" planner answer.
+  if (workflow.cancelled) {
+    settle(workflow, "cancelled", "cancelled by request");
+    return null;
+  }
+  if (remainingMs(workflow) <= 0) {
+    settle(workflow, "timed-out", "workflow deadline expired while planning");
+    return null;
+  }
+
+  try {
+    return parsePlan(finishedPlan);
+  } catch (error) {
+    settle(
+      workflow,
+      "failed",
+      error instanceof PlanError ? `planner output rejected: ${error.message}` : String(error),
+    );
+    return null;
+  }
+}
+
+/**
  * Drive one workflow to `awaiting_review`.
  *
  * Plan -> validate -> schedule in batches until nothing is ready, then settle.
@@ -643,33 +781,8 @@ function chooserState(workflow, options) {
  * cancelled or expired workflow can never launch another process.
  */
 async function runWorkflow(workflow) {
-  const planJob = startPlanner(workflow);
-  if (planJob === null) return;
-
-  const finishedPlan = await awaitPlanner(workflow, planJob);
-  if (finishedPlan === null) return;
-  // Planning can take minutes; a cancel or an expired deadline that landed while
-  // it ran must not be overwritten by a "finished" planner answer.
-  if (workflow.cancelled) {
-    settle(workflow, "cancelled", "cancelled by request");
-    return;
-  }
-  if (remainingMs(workflow) <= 0) {
-    settle(workflow, "timed-out", "workflow deadline expired while planning");
-    return;
-  }
-
-  let rawPlan;
-  try {
-    rawPlan = parsePlan(finishedPlan);
-  } catch (error) {
-    settle(
-      workflow,
-      "failed",
-      error instanceof PlanError ? `planner output rejected: ${error.message}` : String(error),
-    );
-    return;
-  }
+  const rawPlan = await acquirePlan(workflow);
+  if (rawPlan === null) return;
 
   let plan;
   try {
@@ -813,17 +926,17 @@ async function runWorkflow(workflow) {
   }
 
   const counts = countOutcomes(workflow);
-  workflow.phase = "awaiting_review";
-  workflow.status = "awaiting_review";
-  workflow.ended_at = new Date().toISOString();
-  workflow.controller_alive = false;
   workflow.result_counts = counts;
   // The parent never asserts acceptance: the caller reviews the evidence.
   appendArtifact(workflow, "evidence", {
     counts,
     children: workflow.children.map(compactChild),
   });
-  persist(workflow);
+  // Ending goes through settle() even on the successful path. That path used to
+  // stamp ended_at itself, which meant it never released the waiters armed for
+  // this workflow and a dsh_wait on a workflow that succeeded waited out its
+  // whole window. One place now decides a workflow has ended.
+  settle(workflow, "awaiting_review");
 }
 
 function compatibleBatchOrFirst(batch, compatible) {
@@ -900,7 +1013,9 @@ async function awaitPlanner(workflow, plannerJobId) {
       settle(workflow, "timed-out", "workflow deadline expired while planning");
       return null;
     }
-    await sleep(Math.min(250, Math.max(25, remainingMs(workflow))));
+    // The planner is a full worker run, so it is the longest single wait in the
+    // bridge; waking on its close instead of on a timer is worth the most here.
+    await awaitSettlement(plannerJobId, Math.min(250, Math.max(25, remainingMs(workflow))));
   }
 }
 
@@ -1232,6 +1347,15 @@ export function workflowStatus(workflow, { live, includeDetail = false } = {}) {
   if (workflow.plan_job_id ?? workflow.planner_job_id) {
     out.planner_job_id = workflow.plan_job_id ?? workflow.planner_job_id;
   }
+  // Where the plan came from. A code-built plan skipped the planning worker
+  // entirely, so a caller watching for that serial prefix can see it was not
+  // paid, and one that unexpectedly got a single task knows to pass decompose.
+  if (workflow.plan_source !== null && workflow.plan_source !== undefined) {
+    out.plan_source = workflow.plan_source;
+    if (workflow.plan_source === "code") {
+      out.note = workflow.plan_note ?? "plan built in code; no planner was started";
+    }
+  }
   if (workflow.plan !== null && workflow.plan !== undefined) {
     out.task_count = workflow.plan.tasks.length;
     // Reads the bridge dropped from the plan are an adjustment the caller should
@@ -1381,7 +1505,9 @@ export async function waitWorkflow(workflowId, maxWaitMs) {
     if (workflow === undefined) return { settled: false, reason: "unknown workflow" };
     if (workflow.ended_at !== null) return { settled: true, workflow };
     if (Date.now() >= deadline) return { settled: false, workflow };
-    await sleep(Math.min(250, Math.max(25, deadline - Date.now())));
+    // settle() releases this, so the wait ends with the workflow rather than up
+    // to a poll interval after it.
+    await awaitSettlement(workflowId, Math.min(250, Math.max(25, deadline - Date.now())));
   }
 }
 

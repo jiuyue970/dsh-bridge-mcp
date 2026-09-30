@@ -126,8 +126,13 @@ function resetTrace() {
   writeFileSync(join(traceDir, "trace.log"), "");
 }
 
-/** Run one workflow to completion with an injected chooser count. */
-async function runWorkflow(plan, { count = 1, mode = "workspace-write", timeoutMs = 30_000, env = {}, profile } = {}) {
+/**
+ * Run one workflow to completion with an injected chooser count.
+ *
+ * `decompose` defaults to true here so every test below keeps exercising the
+ * planner it was written against. The code-synthesised plan has its own file.
+ */
+async function runWorkflow(plan, { count = 1, mode = "workspace-write", timeoutMs = 30_000, env = {}, profile, decompose = true } = {}) {
   writeFileSync(planFile, JSON.stringify(plan));
   process.env.FAKE_PLAN_FILE = planFile;
   process.env.FAKE_TRACE_DIR = traceDir;
@@ -153,6 +158,7 @@ async function runWorkflow(plan, { count = 1, mode = "workspace-write", timeoutM
     timeoutMs,
     profile,
     dshBin: fakeBin,
+    decompose,
   });
   const outcome = await waitWorkflow(workflow.job_id, timeoutMs + 5_000);
   const { workflow: final } = readWorkflow(workflow.job_id);
@@ -328,6 +334,7 @@ try {
       mode: "workspace-write",
       allowedPaths: allowed,
       timeoutMs: 30_000,
+      decompose: true,
       dshBin: fakeBin,
     });
     await waitWorkflow(workflow.job_id, 20_000);
@@ -366,6 +373,7 @@ try {
       mode: "workspace-write",
       allowedPaths: ["src"],
       timeoutMs: 30_000,
+      decompose: true,
       dshBin: fakeBin,
     });
     await waitWorkflow(workflow.job_id, 20_000);
@@ -403,6 +411,7 @@ try {
       mode: "workspace-write",
       allowedPaths: ["."],
       timeoutMs: 30_000,
+      decompose: true,
       dshBin: fakeBin,
     });
     await waitWorkflow(workflow.job_id, 35_000);
@@ -477,6 +486,7 @@ try {
       mode: "workspace-write",
       allowedPaths: ["."],
       timeoutMs: 30_000,
+      decompose: true,
       dshBin: fakeBin,
     });
     workflowRef = workflow;
@@ -537,6 +547,7 @@ try {
       mode: "workspace-write",
       allowedPaths: ["."],
       timeoutMs: 60_000,
+      decompose: true,
       dshBin: fakeBin,
     });
     workflowRef = workflow;
@@ -595,6 +606,7 @@ try {
       mode: "workspace-write",
       allowedPaths: ["."],
       timeoutMs: 1_500,
+      decompose: true,
       dshBin: fakeBin,
     });
     const settled = await waitWorkflow(workflow.job_id, 20_000);
@@ -639,6 +651,7 @@ try {
       mode: "workspace-write",
       allowedPaths: ["."],
       timeoutMs: 60_000,
+      decompose: true,
       dshBin: fakeBin,
     });
     // Wait until the hanging worker is genuinely running, then cancel.
@@ -685,6 +698,7 @@ try {
       mode: "workspace-write",
       allowedPaths: ["."],
       timeoutMs: 60_000,
+      decompose: true,
       dshBin: fakeBin,
     });
     // Wait until the planner is genuinely running, then cancel.

@@ -1,0 +1,4 @@
+#!/bin/sh
+# A deterministic stand-in for the dsh CLI, used by the tests and the benchmarks.
+# Resolves its own directory so it works from a checkout anywhere.
+exec "${NODE:-node}" "$(dirname "$0")/fake-dsh.mjs" "$@"

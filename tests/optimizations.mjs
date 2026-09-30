@@ -12,9 +12,16 @@ import { join } from "node:path";
 
 process.env.DSH_BRIDGE_STATE_DIR = mkdtempSync(join(tmpdir(), "dsh-opt-state-"));
 
-const { JOB_ROOT, MAX_ANSWER_CHARS, MAX_INLINE_WAIT_MS, TIMEOUT_TIERS, WORKFLOW_TIMEOUT_TIERS, DEFAULT_WAIT_WINDOW_MS } = await import(
-  "../src/config.mjs"
-);
+const {
+  JOB_ROOT,
+  MAX_ANSWER_CHARS,
+  MAX_FOREGROUND_WAIT_CAP_MS,
+  MAX_INLINE_WAIT_MS,
+  TIMEOUT_TIERS,
+  WORKFLOW_TIMEOUT_TIERS,
+  DEFAULT_WAIT_WINDOW_MS,
+  DEFAULT_PLANNING_TIMEOUT_MS,
+} = await import("../src/config.mjs");
 const { startJob, waitJob, readJob, pruneJobState, cancelJob, statusOf } = await import("../src/jobs.mjs");
 
 const root = mkdtempSync(join(tmpdir(), "dsh-opt-"));
@@ -97,8 +104,14 @@ try {
 
   // 5. The defaults the cost analysis chose are actually the defaults.
   {
-    assert.equal(DEFAULT_WAIT_WINDOW_MS, 300_000, "the default wait window must be 5 minutes");
+    assert.equal(DEFAULT_WAIT_WINDOW_MS, 240_000, "the default wait window must be 4 minutes");
+    assert.ok(DEFAULT_WAIT_WINDOW_MS < 300_000, "the default must return before the outer 300s MCP tools/call timeout");
+    assert.ok(
+      DEFAULT_WAIT_WINDOW_MS < MAX_FOREGROUND_WAIT_CAP_MS,
+      "the default must sit under the unchanged foreground wait cap",
+    );
     assert.ok(MAX_INLINE_WAIT_MS <= 60_000, "inline waiting must stay short enough to fall back quickly");
+    assert.equal(DEFAULT_PLANNING_TIMEOUT_MS, 10 * 60 * 1000, "the planning deadline must be 10 minutes");
     console.log("ok - the measured defaults are wired in, not just documented");
   }
 
@@ -108,17 +121,17 @@ try {
     await waitJob(finished.job_id, 10_000);
     const live = start(20_000);
 
-    const dry = pruneJobState({ olderThanMs: 0, apply: false });
+    const dry = await pruneJobState({ olderThanMs: 0, apply: false });
     assert.equal(dry.applied, false);
     assert.equal(dry.removed, 0, "a dry run must not delete anything");
     assert.ok(dry.eligible >= 1, "the finished job must be eligible");
     assert.ok(readJob(finished.job_id) !== undefined, "the snapshot still exists after a dry run");
 
-    const fresh = pruneJobState({ olderThanMs: 24 * 60 * 60 * 1000, apply: true });
+    const fresh = await pruneJobState({ olderThanMs: 24 * 60 * 60 * 1000, apply: true });
     assert.equal(fresh.removed, 0, "a job that ended seconds ago is not older than a day");
     assert.ok(readJob(finished.job_id) !== undefined, "a recent snapshot survives an applied prune");
 
-    const applied = pruneJobState({ olderThanMs: 0, apply: true });
+    const applied = await pruneJobState({ olderThanMs: 0, apply: true });
     assert.equal(applied.applied, true);
     assert.ok(applied.removed >= 1, "an applied prune removes the settled snapshot");
     const names = readdirSync(JOB_ROOT).filter((n) => n.endsWith(".json"));

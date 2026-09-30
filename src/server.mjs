@@ -24,6 +24,7 @@ import {
   SERVER_VERSION,
 } from "./config.mjs";
 import { cancelJob, listJobs, pruneJobState, readJob, startJob, statusOf, waitJob } from "./jobs.mjs";
+import { awaitAnySettlement } from "./settle.mjs";
 import {
   cancelWorkflow,
   childStatus,
@@ -89,35 +90,30 @@ server.registerTool(
   {
     title: "Delegate a whole task to a managed DSH workflow",
     description:
-      "Delegate one complete objective to a managed DeepSeek Harness (DSH) workflow and return a parent job_id immediately. " +
-      "The parent plans with a read-only DSH worker, validates the plan in code, judges safe concurrency with TypeSafe, " +
-      "runs one DSH worker per task, and ends in status awaiting_review with compact evidence per task. " +
-      "It does NOT claim the work is accepted: check the returned evidence and files yourself. " +
-      "Use dsh_wait (or dsh_wait_any for several) on the returned job_id to collect it, exactly as with dsh_start. " +
-      "Prefer this over dsh_start when a task needs decomposition, several files, or implementation plus tests.",
+      "Run one objective as a managed DeepSeek Harness workflow: one worker per task, ending in status awaiting_review " +
+      "with per-task evidence. Returns a parent job_id at once; collect it with dsh_wait or dsh_wait_any. " +
+      "awaiting_review is NOT acceptance, so check the evidence and the files yourself. " +
+      "Prefer dsh_start for a single self-contained task.",
     inputSchema: {
       task: z
         .string()
         .min(1)
-        .describe(
-          "The complete objective including every constraint, relevant path, and the definition of done. Workers see only what the plan tells them.",
-        ),
+        .describe("The complete objective: every constraint, relevant path, and the definition of done."),
       cwd: z
         .string()
         .min(1)
-        .describe(
-          "Absolute working directory for the whole workflow. Required and explicit: every task path is validated relative to it.",
-        ),
+        .describe("Absolute working directory. Every task path is validated relative to it."),
       mode: z
         .enum(["read-only", "workspace-write"])
         .describe(
-          "read-only forbids all writes: any plan declaring a write path is rejected. workspace-write allows writes inside declared paths.",
+          "read-only rejects any plan declaring a write path; workspace-write allows writes inside allowed_paths.",
         ),
       allowed_paths: z
         .array(z.string())
         .optional()
         .describe(
-          'Paths the objective may touch, relative to cwd. Defaults to the project root ("."). Plans declaring paths outside this set are rejected.',
+          'Paths the objective may touch, relative to cwd. Default ["."]; anything outside is rejected. ' +
+            'With workspace-write, name a subpath rather than ".".',
         ),
       timeout_ms: z
         .number()
@@ -131,15 +127,21 @@ server.registerTool(
         .enum(["investigate", "edit", "build"])
         .optional()
         .describe(
-          "Named total deadline used when timeout_ms is absent: investigate (20m), edit (1h), build (2h). An explicit timeout_ms always wins.",
+          "Total deadline when timeout_ms is absent: investigate 20m, edit 1h, build 2h. timeout_ms wins if both are given.",
         ),
       profile: z
         .string()
         .optional()
         .describe(
-          `DSH profile to boot for every task worker. Default "${DEFAULT_PROFILE}". ` +
-            `The planner always boots "${DEFAULT_PROFILE}", so a profile that adds write-capable tools reaches only the workers. ` +
-            "Note that mode does not narrow a profile's network tools: a read-only workflow on a write-capable profile can still write through them.",
+          `DSH profile for each worker. Default "${DEFAULT_PROFILE}". ` +
+            "mode does not narrow a profile's network tools.",
+        ),
+      decompose: z
+        .boolean()
+        .optional()
+        .describe(
+          "true adds an extra serial worker run to plan the split first. Default false; true only if the objective " +
+            "genuinely needs concurrent tasks, since false is then still correct, just serial.",
         ),
     },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
@@ -153,6 +155,7 @@ server.registerTool(
         allowedPaths: args.allowed_paths,
         timeoutMs: args.timeout_ms ?? (args.tier ? WORKFLOW_TIMEOUT_TIERS[args.tier] : undefined),
         profile: args.profile,
+        decompose: args.decompose,
       });
       const creds = credentialStatus();
       return ok({
@@ -183,16 +186,15 @@ server.registerTool(
   {
     title: "Start a DSH worker job",
     description:
-      "Delegate one self-contained coding task to a DeepSeek Harness (DSH) headless worker and return a job_id immediately. " +
-      "The worker runs in the given working directory with a full coding tool set (bash, file read/write/search, skills) and reports only its final answer. " +
-      "Prefer this over dsh_run_sync for anything that may take more than a couple of minutes. " +
-      "Do not start a second job for the same task while the first is still running.",
+      "Run one self-contained task on a DeepSeek Harness headless worker (bash, file read/write/search, skills) and " +
+      "return a job_id at once; it reports only its final answer. Use dsh_delegate when an objective must be split " +
+      "across workers instead. Do not start a second job for the same task while the first is still running.",
     inputSchema: {
       task: z
         .string()
         .min(1)
         .describe(
-          "The complete, self-contained task. The worker sees only this text plus its working directory, so include every constraint, path, and expected outcome.",
+          "The complete, self-contained task; the worker sees only this text and its cwd, so include every constraint, path and expected outcome.",
         ),
       cwd: z
         .string()
@@ -203,12 +205,12 @@ server.registerTool(
         .int()
         .positive()
         .optional()
-        .describe("Deadline in milliseconds. The worker is terminated when it expires. Default 30 minutes."),
+        .describe("Deadline in ms; the worker is terminated when it expires. Default 30 minutes."),
       tier: z
         .enum(["investigate", "edit", "build"])
         .optional()
         .describe(
-          "Named deadline used when timeout_ms is absent: investigate (5m), edit (15m), build (30m). An explicit timeout_ms always wins.",
+          "Deadline when timeout_ms is absent: investigate 5m, edit 15m, build 30m. timeout_ms wins if both are given.",
         ),
       wait_for_ms: z
         .number()
@@ -216,9 +218,8 @@ server.registerTool(
         .nonnegative()
         .optional()
         .describe(
-          `Hold this call open up to this long (capped at ${MAX_INLINE_WAIT_MS}) and return the finished result inline. ` +
-            "Most jobs finish in seconds, so a few seconds here replaces a whole start-then-poll round trip. " +
-            "A job still running when the window closes is returned as a normal background job_id.",
+          `Hold the call open this long and return a finished result inline, saving a start-then-poll round trip. Max ${MAX_INLINE_WAIT_MS}. ` +
+            "A job still running at the deadline is returned as a background job_id.",
         ),
       profile: z
         .string()
@@ -267,20 +268,18 @@ server.registerTool(
   {
     title: "Read a DSH worker or workflow job",
     description:
-      "Read compact status for a DSH job. Works on both a plain worker job from dsh_start and a parent workflow from dsh_delegate. " +
-      "A workflow returns phase, counts, per-task evidence summaries and child job ids by default. " +
-      "Bulk fields (stderr tail, full plan, worker transcripts) are omitted unless include_logs asks for them. " +
-      "This returns immediately, so it is a read, not a way to wait: to wait for a job use dsh_wait, and for several use dsh_wait_any. " +
-      "Both already return this same status when the job settles, so reach for dsh_get only to re-read a job you have stopped waiting on, " +
-      "or with include_logs=true to recover an answer that came back trimmed.",
+      "Read compact status for a worker job or a dsh_delegate parent workflow: phase, counts, per-task evidence " +
+      "summaries, child job ids. Bulk fields (stderr tail, full plan, transcripts) need include_logs. A read, not a " +
+      "wait — dsh_wait and dsh_wait_any already return this on settlement, so use dsh_get to re-read a job you " +
+      "stopped waiting on, or to recover a trimmed answer.",
     inputSchema: {
       job_id: z.string().min(1).describe("The job_id returned by dsh_start or dsh_delegate."),
       include_logs: z
         .boolean()
         .optional()
         .describe(
-          "Return the answer untrimmed, or for a workflow the full decision and plan detail. Default false. " +
-            "A failure's diagnostics are always included, so this is not needed to see why a job failed.",
+          "Return the answer untrimmed, or a workflow's full decision and plan detail. Default false. A failure's " +
+            "diagnostics are already included.",
         ),
     },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
@@ -306,8 +305,8 @@ server.registerTool(
   {
     title: "Wait for a DSH worker or workflow job",
     description:
-      "Wait up to max_wait_ms for a job to finish, then return its status. Works on worker jobs and on dsh_delegate parent workflows. " +
-      "Returns as soon as the job settles. This never cancels the job; a job still running after the window stays running.",
+      "Wait up to max_wait_ms for a worker job or a dsh_delegate parent workflow to settle, then return its status. " +
+      "This never cancels: a job still running after the window keeps running.",
     inputSchema: {
       job_id: z.string().min(1).describe("The job_id returned by dsh_start or dsh_delegate."),
       max_wait_ms: z
@@ -316,8 +315,8 @@ server.registerTool(
         .positive()
         .optional()
         .describe(
-          `Observation window in milliseconds. Default ${DEFAULT_WAIT_WINDOW_MS}, capped at ${MAX_FOREGROUND_WAIT_CAP_MS}. ` +
-            "Each poll re-sends your whole conversation, so prefer one long window over several short ones.",
+          `Observation window in ms. Default ${DEFAULT_WAIT_WINDOW_MS}, max ${MAX_FOREGROUND_WAIT_CAP_MS}. A job still running at the deadline ` +
+            "is waited on again with that default. Prefer long windows: each poll re-sends your whole conversation.",
         ),
       include_logs: z.boolean().optional().describe("Return the answer untrimmed when it settles. Default false."),
     },
@@ -343,7 +342,7 @@ server.registerTool(
       const payload = workflowStatus(workflow, { live: true, includeDetail: args.include_logs === true });
       payload.waited_ms = Math.min(window, Date.now() - startedAt);
       if (!outcome.settled) {
-        payload.note = "Still running. Wait again with a longer max_wait_ms; dsh_get would only return this same payload.";
+        payload.note = `Still running. Wait again on the same job with the ${DEFAULT_WAIT_WINDOW_MS} ms default window, which stays under the outer 300 s MCP tools/call limit; dsh_get would only return this same payload.`;
       }
       return ok(payload);
     }
@@ -352,7 +351,7 @@ server.registerTool(
     const payload = statusOf(current ?? found.job, { includeLogs: args.include_logs === true });
     payload.waited_ms = Math.min(window, Date.now() - startedAt);
     if ((current ?? found.job).status === "running") {
-      payload.note = "Still running. Wait again with a longer max_wait_ms; dsh_get would only return this same payload.";
+      payload.note = `Still running. Wait again on the same job with the ${DEFAULT_WAIT_WINDOW_MS} ms default window, which stays under the outer 300 s MCP tools/call limit; dsh_get would only return this same payload.`;
     }
     return ok(payload);
   },
@@ -364,9 +363,8 @@ server.registerTool(
   {
     title: "Read a DSH worker output tail",
     description:
-      "Return the last N characters of a worker's two output streams. stderr_tail is the worker's reasoning as it streams: " +
-      "the only sign of progress while a job runs, and what it was doing when it stopped. stdout_tail is the answer, which " +
-      "arrives in one write at the end; to read a whole answer use dsh_get with include_logs=true instead.",
+      "Return the last N characters of a worker's stderr and stdout. stderr_tail is the reasoning that streams, and the " +
+      "only sign of progress while a job runs; stdout_tail is the answer, so use dsh_get with include_logs=true for a whole one.",
     inputSchema: {
       job_id: z
         .string()
@@ -439,11 +437,9 @@ server.registerTool(
   {
     title: "Cancel a DSH worker job or workflow",
     description:
-      "Request cancellation of a running DSH worker, or of a dsh_delegate parent workflow. " +
-      "Cancelling a workflow stops any further task from being started and requests cancellation of the workers it started, " +
-      "reporting exactly which requests were made and which were not confirmed. " +
-      "Use when the user asks to stop or the task is obsolete. " +
-      "Do not cancel merely because the job is quiet: a long task can run for many minutes without output.",
+      "Request cancellation of a running worker job or dsh_delegate parent workflow, reporting which requests were " +
+      "confirmed. Cancelling a workflow stops further tasks from starting and cancels the workers it already started. " +
+      "Do not cancel because a job is quiet: a long task can run for minutes without output.",
     inputSchema: {
       job_id: z.string().min(1).describe("The job_id returned by dsh_start or dsh_delegate."),
     },
@@ -480,8 +476,10 @@ server.registerTool(
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   async (args) => {
-    const all = listJobs();
-    const flows = listWorkflows();
+    // Both listings read the same snapshot directories, so they are awaited
+    // together: the event loop stays free while the stat sweep runs, and a
+    // second call after a job has settled costs a stat per file, not a read.
+    const [all, flows] = await Promise.all([listJobs(), listWorkflows()]);
     const limit = Math.min(args.limit ?? DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT);
     return ok({
       count: all.length,
@@ -519,10 +517,9 @@ server.registerTool(
   {
     title: "Wait for the first of several DSH jobs",
     description:
-      "Wait on a set of job ids at once and return as soon as the first one settles, or with wait_for=\"all\" once every one has. " +
-      "Use this instead of calling dsh_wait per job when several run in parallel: it collapses N polling chains into one. " +
-      "Every settled job comes back with the same full status dsh_get would return, including its answer, so no follow-up read is needed. " +
-      "Jobs still running when the window closes are listed so you can wait on them again.",
+      "Wait on a set of job ids at once and return as soon as the first settles, or with wait_for=\"all\" once all have. " +
+      "Use instead of one dsh_wait per job. Each settled job returns the full status dsh_get would, including its answer, " +
+      "so no follow-up read is needed; jobs still running are listed to wait on again.",
     inputSchema: {
       job_ids: z
         .array(z.string().min(1))
@@ -576,7 +573,11 @@ server.registerTool(
       : () => ids.some((id) => !pending(requireJob(id)));
     while (Date.now() < deadline) {
       if (goalReached()) break;
-      await new Promise((resolve) => setTimeout(resolve, Math.min(250, Math.max(25, deadline - Date.now()))));
+      // Wake on whichever watched job settles first, so a waiter on a batch is
+      // no later than the job it is waiting on. Any id this process does not own
+      // has no signal, which is why the cap stays: it is what still bounds an id
+      // whose only possible end is the window closing.
+      await awaitAnySettlement(ids, Math.min(250, Math.max(25, deadline - Date.now())));
     }
 
     // One last read per id. Everything the caller would otherwise fetch with a
@@ -650,20 +651,19 @@ server.registerTool(
   {
     title: "Report or clean up finished DSH bridge state",
     description:
-      "Report how much finished bridge state is on disk and, with apply=true, delete the part older than the cutoff. " +
-      "Dry run by default. Only settled jobs and workflows are eligible; anything still running is always kept. " +
-      "This touches the bridge's own job and workflow state, never a project's files and never DSH's own session history.",
+      "Report finished bridge state on disk and, with apply=true, delete what is older than the cutoff. Dry run by " +
+      "default; only settled jobs and workflows are eligible, and anything still running is always kept. Touches the " +
+      "bridge's own state only, never project files or DSH session history.",
     inputSchema: {
       older_than_days: z
         .number()
         .nonnegative()
         .optional()
-        .describe(`Age cutoff in days, measured from when the job ended. Default ${DEFAULT_PRUNE_AGE_DAYS}; 0 means every settled job. ` +
-            "The real guard is apply, which defaults to false."),
+        .describe(`Age cutoff in days from when the job ended. Default ${DEFAULT_PRUNE_AGE_DAYS}; 0 means every settled job. apply is the real guard.`),
       apply: z
         .boolean()
         .optional()
-        .describe("false (default) reports what would be removed. true performs the deletion, which cannot be undone."),
+        .describe("false (default) reports only. true deletes, which cannot be undone."),
     },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
   },
@@ -671,8 +671,10 @@ server.registerTool(
     const days = args.older_than_days ?? DEFAULT_PRUNE_AGE_DAYS;
     const olderThanMs = days * 24 * 60 * 60 * 1000;
     const apply = args.apply === true;
-    const jobsResult = pruneJobState({ olderThanMs, apply });
-    const workflowsResult = pruneWorkflowState({ olderThanMs, apply });
+    const [jobsResult, workflowsResult] = await Promise.all([
+      pruneJobState({ olderThanMs, apply }),
+      pruneWorkflowState({ olderThanMs, apply }),
+    ]);
     const bytes = jobsResult.bytes + workflowsResult.bytes;
     return ok({
       older_than_days: days,

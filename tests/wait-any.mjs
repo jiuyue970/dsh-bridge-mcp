@@ -20,6 +20,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 import {
+  DEFAULT_WAIT_WINDOW_MS,
   MAX_ANSWER_CHARS,
   MIN_SHARED_ANSWER_CHARS,
   WAIT_ANY_ANSWER_BUDGET_CHARS,
@@ -212,6 +213,51 @@ try {
       assert.equal(stub.status, "done", "only finished, uninteresting work is summarised");
     }
     console.log("ok - the result has a ceiling, and failures are never the part it drops");
+  }
+
+  // 9. The default 240000 ms window still returns the instant a job settles.
+  {
+    assert.equal(DEFAULT_WAIT_WINDOW_MS, 240_000, "the default wait window must be 240000 ms (4 minutes)");
+
+    // The freshly started server must advertise that default in its live schema,
+    // not just agree with the constant this test imported.
+    const tools = await client.listTools();
+    for (const name of ["dsh_wait", "dsh_wait_any"]) {
+      const tool = tools.tools.find((candidate) => candidate.name === name);
+      assert.ok(tool, `${name} must be registered`);
+      assert.match(
+        tool.inputSchema.properties.max_wait_ms.description,
+        /240000/,
+        `${name} must advertise the 240000 ms default in its live schema`,
+      );
+    }
+
+    const job = await start({ ms: 150, chars: 7 });
+    const began = Date.now();
+    const waited = await call("dsh_wait", { job_id: job.job_id }); // no max_wait_ms: exercise the default
+    const elapsed = Date.now() - began;
+    assert.equal(waited.status, "done", "a fast job must settle inside the default window");
+    assert.equal(waited.answer, "A".repeat(7));
+    assert.ok(
+      elapsed < 60_000,
+      `dsh_wait must return on settlement, not at the ${DEFAULT_WAIT_WINDOW_MS} ms default (took ${elapsed} ms)`,
+    );
+
+    const quick = await start({ ms: 150, chars: 9 });
+    const slow = await start({ ms: 60_000, chars: 5 });
+    const beganAny = Date.now();
+    const waitedAny = await call("dsh_wait_any", { job_ids: [quick.job_id, slow.job_id] }); // no max_wait_ms
+    const elapsedAny = Date.now() - beganAny;
+    assert.equal(waitedAny.settled_count, 1, "the default window returns on the first finisher");
+    assert.equal(waitedAny.settled[0].status, "done");
+    assert.equal(waitedAny.settled[0].job_id, quick.job_id);
+    assert.equal(waitedAny.settled[0].answer, "A".repeat(9), "the finisher's answer is already in hand");
+    assert.ok(
+      elapsedAny < 60_000,
+      `dsh_wait_any must return on settlement, not at the ${DEFAULT_WAIT_WINDOW_MS} ms default (took ${elapsedAny} ms)`,
+    );
+    await call("dsh_cancel", { job_id: slow.job_id });
+    console.log("ok - the default 240000 ms window returns on settlement, not at the deadline");
   }
 
   console.log("all wait-any checks passed");
