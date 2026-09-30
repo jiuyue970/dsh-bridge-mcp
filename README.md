@@ -220,6 +220,17 @@ unless the file does. A `dsh_list` that used to block for 1,400 ms every call
 now costs ~350 ms on the first call in a process and ~18 ms on every later one,
 and a cheap call queued behind it no longer waits at all.
 
+The write side had the same shape of problem. stdout arrives in as many chunks
+as the child happens to write, and each chunk used to rewrite the whole snapshot
+synchronously, so a streaming worker cost a write per chunk and each write grew
+with the answer — an 80 KB answer delivered in 40 chunks wrote ~1.6 MB, 21x the
+answer, blocking the single-threaded server on every one. Writes while a job is
+still running are now bounded to one per 250 ms, so the cost stops depending on
+how a worker chunks its output. Settling always writes through immediately, so a
+finished job is still complete on disk: measured, a 60-chunk stream costs 2
+snapshot writes instead of 60, and 200 chunks cost 6 instead of 200, with the
+answer intact and `truncated` still false in both cases.
+
 ### What the descriptions cost
 
 Nine tool descriptions are re-sent with **every** request, so their cost scales
@@ -564,6 +575,7 @@ injected, so scheduling decisions are deterministic.
 | `tests/planning-prefix.mjs` | the code-synthesised plan: no planner is started where a plan can be built, the write scope is the caller's grant, a bare-dot scope still plans and says why, `decompose:true` reaches the planner, the objective reaches the worker verbatim |
 | `tests/schema-budget.mjs` | the tool schemas stay inside their re-sent-per-request budget, and every tool still carries a real description |
 | `tests/settlement.mjs` | waiting ends with the work: a live job is armed, every settlement path (done, failed, cancelled) releases, an untracked subject keeps its own cadence instead of spinning, a wait loop over a set keeps waiting after one member finishes, a late waiter is told at once, and a successful workflow releases its waiters |
+| `tests/persist-coalescing.mjs` | a streaming worker's snapshot writes stay bounded rather than one per chunk, and a settled, cancelled, or single-chunk job is still written in full |
 | `tests/job-index.mjs` | the snapshot index: only requested fields are cached, a changed snapshot is re-read rather than served stale, explicit invalidation wins at identical size, corrupt and deleted files are skipped, and the real listing plus the dry and applied prunes agree with disk |
 | `tests/session-boundary.mjs` | hook gates (history, context size, confidence, cooldown), fail-open paths, bounded data sent out, transcript tail reading, process exit behaviour without a key |
 

@@ -65,6 +65,23 @@ async function ensureJobRootAsync() {
  */
 const JOB_ROW_FIELDS = ["job_id", "status", "task", "cwd", "created_at", "ended_at"];
 
+/**
+ * Minimum gap between snapshot writes while a job is still running.
+ *
+ * stdout arrives in as many chunks as the child happens to write, and a chunk
+ * used to rewrite the whole snapshot synchronously. A worker streaming an 80 KB
+ * answer in 40 chunks therefore wrote ~1.6 MB -- 21x the answer -- and blocked
+ * the event loop on every one of them, which is the same class of problem the
+ * read-side index exists to fix.
+ *
+ * The rate is bounded rather than deduplicated so the cost stops depending on
+ * how a particular worker happens to chunk its output, which is not something
+ * the bridge controls or can predict. Settling always flushes, so a finished
+ * job is still written in full and nothing is lost: the snapshot of a running
+ * job is a progress record, and its answer is only complete at close anyway.
+ */
+const PERSIST_INTERVAL_MS = 250;
+
 /** Persist a compact job snapshot. Never throws: persistence is best-effort. */
 function persist(job) {
   try {
@@ -91,6 +108,38 @@ function persist(job) {
   } catch {
     // A read-only or full temp dir must not fail the delegation itself.
   }
+}
+
+/**
+ * Persist soon, at most once per {@link PERSIST_INTERVAL_MS}.
+ *
+ * Used on the chunk path, where the number of calls is decided by the worker
+ * rather than by the bridge. A write already pending is left to stand: the
+ * later chunks it will capture are strictly fresher than this one.
+ */
+function schedulePersist(job) {
+  if (job.persist_timer !== undefined) return;
+  const timer = setTimeout(() => {
+    job.persist_timer = undefined;
+    persist(job);
+  }, PERSIST_INTERVAL_MS);
+  timer.unref?.();
+  job.persist_timer = timer;
+}
+
+/**
+ * Persist now, cancelling any write still pending.
+ *
+ * Every settling path goes through here rather than through `persist` so that
+ * the final state reaches disk immediately and cannot be overtaken by a timer
+ * that was scheduled before it.
+ */
+function flushPersist(job) {
+  if (job.persist_timer !== undefined) {
+    clearTimeout(job.persist_timer);
+    job.persist_timer = undefined;
+  }
+  persist(job);
 }
 
 /**
@@ -296,7 +345,7 @@ export function startJob({ task, cwd, timeoutMs, dshBin, profile, deadlineAt }) 
     job.status = "failed";
     job.error = `spawn failed: ${error.message}`;
     job.ended_at = new Date().toISOString();
-    persist(job);
+    flushPersist(job);
     settled();
     return job;
   }
@@ -326,7 +375,10 @@ export function startJob({ task, cwd, timeoutMs, dshBin, profile, deadlineAt }) 
 
   proc.stdout.on("data", (chunk) => {
     appendBounded(job, "stdout", chunk);
-    persist(job);
+    // Not `persist`: the child decides how many chunks stdout arrives in, and
+    // rewriting the whole snapshot per chunk made that cost grow with the
+    // square of the answer.
+    schedulePersist(job);
   });
   proc.stderr.on("data", (chunk) => {
     appendBounded(job, "stderr", chunk);
@@ -337,7 +389,7 @@ export function startJob({ task, cwd, timeoutMs, dshBin, profile, deadlineAt }) 
     job.status = "failed";
     job.error = `process error: ${error.message}`;
     job.ended_at = new Date().toISOString();
-    persist(job);
+    flushPersist(job);
     settled();
   });
 
@@ -379,7 +431,7 @@ export function startJob({ task, cwd, timeoutMs, dshBin, profile, deadlineAt }) 
           ? `exited with code ${code}`
           : `exited with code ${code} and no diagnostic on stderr`;
     }
-    persist(job);
+    flushPersist(job);
     jobs.set(jobId, job);
     settled();
   });
@@ -427,7 +479,7 @@ export function cancelJob(jobId) {
   job.status = "cancelled";
   job.error = "cancelled by request";
   job.ended_at = new Date().toISOString();
-  persist(job);
+  flushPersist(job);
   // The cancellation is recorded, so anyone waiting on this job has their answer
   // now; whether the process actually dies is not what they asked for.
   job.releaseWaiters?.();
