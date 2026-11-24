@@ -9,6 +9,7 @@ node_modules/
 *.key
 
 # Logs and runtime state
+.state/
 logs/
 *.log
 npm-debug.log*

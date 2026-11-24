@@ -1,0 +1,2691 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>DSH Agent Console</title>
+<style>
+:root { color-scheme: dark; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: #12171b;
+  color: #cfe0e7;
+  font-family: ui-monospace, SFMono-Regular, Menlo, "Cascadia Mono", "DejaVu Sans Mono", Consolas, monospace;
+  padding: 10px 8px 22px;
+  -webkit-text-size-adjust: 100%;
+}
+body > * { width: 100%; }
+
+#cad-term {
+  box-sizing: border-box;
+  --cad-bg: #1c2328;
+  --cad-bg2: #20272d;
+  --cad-panel: #1c2328;
+  --cad-panel2: #1a2126;
+  --cad-line: #2d363e;
+  --cad-line2: #53616d;
+  --cad-fg: #cfe0e7;
+  --cad-dim: #7d929d;
+  --cad-dim2: #97a4ae;
+  --cad-cy: #3ee7f5;
+  --cad-bl: #74a9ff;
+  --cad-gr: #69efa6;
+  --cad-pu: #bd8cff;
+  --cad-am: #ffc36b;
+  --cad-rd: #ff8484;
+  display: block;
+  width: 100%;
+  max-width: 736px;
+  margin: 0 auto;
+  border: 1px solid var(--cad-line2);
+  border-radius: 2px;
+  background: var(--cad-bg);
+  color: var(--cad-fg);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.45;
+  overflow: hidden;
+}
+#cad-term *, #cad-term *::before, #cad-term *::after { box-sizing: border-box; }
+#cad-term [hidden] { display: none !important; }
+
+#cad-term :focus-visible {
+  outline: 2px solid var(--cad-cy);
+  outline-offset: 1px;
+}
+
+#cad-term .cad-sr {
+  position: absolute;
+  width: 1px; height: 1px;
+  margin: -1px; padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---------- terminal chrome ---------- */
+#cad-term .cad-chrome {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 8px;
+  background: var(--cad-bg2);
+  border-bottom: 1px solid var(--cad-line2);
+}
+#cad-term .cad-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+#cad-term .cad-dot.d1 { background: #ff5f57; }
+#cad-term .cad-dot.d2 { background: #febc2e; }
+#cad-term .cad-dot.d3 { background: #28c840; }
+#cad-term .cad-title {
+  flex: 1;
+  text-align: center;
+  color: var(--cad-dim);
+  letter-spacing: 0.04em;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+#cad-term .cad-title b { color: var(--cad-cy); font-weight: 500; }
+
+#cad-term .cad-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--cad-line);
+  color: var(--cad-dim2);
+}
+#cad-term .cad-legend b { color: var(--cad-dim); font-weight: 400; }
+
+/* ---------- runtime strip ---------- */
+#cad-term .cad-runtime {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--cad-line);
+  background: var(--cad-panel2);
+  font-size: 11px;
+  color: var(--cad-dim);
+  overflow-wrap: anywhere;
+}
+#cad-term .cad-runtime b { color: var(--cad-dim2); font-weight: 400; }
+#cad-term .cad-runtime .v { color: var(--cad-fg); }
+#cad-term .cad-runtime .v.warn { color: var(--cad-am); }
+#cad-term .cad-runtime .v.bad { color: var(--cad-rd); }
+#cad-term .cad-note-inline { color: var(--cad-dim2); }
+
+/* ---------- stage / board ---------- */
+#cad-term .cad-stage { position: relative; padding: 6px 0 0; }
+#cad-term .cad-wires {
+  position: absolute;
+  left: 0; top: 0;
+  width: 100%; height: 100%;
+  pointer-events: none;
+  z-index: 0;
+}
+#cad-term .cad-wires path.cad-w {
+  fill: none;
+  stroke: var(--cad-line2);
+  stroke-width: 1;
+  stroke-linejoin: miter;
+  stroke-linecap: butt;
+}
+#cad-term .cad-wires circle.cad-pkt { display: none; }
+
+#cad-term .cad-board {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  gap: 26px;
+  align-items: stretch;
+  padding: 0 8px;
+}
+#cad-term .cad-flow {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 26px;
+  min-width: 0;
+}
+
+/* ---------- nodes ---------- */
+#cad-term .cad-node {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0;
+  margin: 0;
+  padding: 4px 7px;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: var(--cad-fg);
+  background: var(--cad-panel);
+  border: 1px solid var(--cad-line2);
+  border-radius: 2px;
+  --k: var(--cad-cy);
+  transition: border-color .15s linear, box-shadow .15s linear, background-color .15s linear;
+}
+#cad-term button.cad-node { cursor: pointer; }
+#cad-term button.cad-node:hover { border-color: color-mix(in oklab, var(--k) 55%, var(--cad-line2)); }
+#cad-term .cad-node.is-on {
+  border-color: var(--k);
+  background: color-mix(in oklab, var(--k) 11%, var(--cad-panel));
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--k) 35%, transparent), 0 0 12px -6px var(--k);
+}
+#cad-term .cad-node[aria-pressed="true"] { box-shadow: inset 2px 0 0 var(--k); }
+#cad-term .cad-node-t { font-size: 12px; font-weight: 500; color: var(--k); overflow-wrap: anywhere; }
+#cad-term .cad-node-m, #cad-term .cad-node-e, #cad-term .cad-node-d { font-size: 11px; overflow-wrap: anywhere; }
+#cad-term .cad-node-m { color: var(--cad-fg); }
+#cad-term .cad-node-e { color: var(--cad-dim); }
+#cad-term .cad-node-d { color: var(--cad-dim2); }
+#cad-term .cad-node-r { font-size: 11px; color: var(--cad-am); overflow-wrap: anywhere; }
+#cad-term .cad-node-r:empty { display: none; }
+#cad-term .cad-main { max-width: 220px; --k: var(--cad-cy); border-color: color-mix(in oklab, var(--cad-cy) 55%, var(--cad-line2)); }
+#cad-term .cad-back { max-width: 330px; --k: var(--cad-cy); background: var(--cad-panel2); border-color: color-mix(in oklab, var(--cad-cy) 55%, var(--cad-line2)); }
+
+/* ---------- external MCP execution (no role here, so it stands on its own) ---------- */
+#cad-term .cad-ext {
+  max-width: 520px;
+  margin: 0 0 16px;
+  --k: var(--cad-am);
+  background: color-mix(in oklab, var(--cad-am) 6%, var(--cad-panel));
+  border-color: color-mix(in oklab, var(--cad-am) 45%, var(--cad-line2));
+}
+/* Only a genuinely active external task breathes; the class is dropped as soon as
+   statusLabel() reports the run finished, so nothing here runs on a timer alone. */
+@keyframes cad-ext-breathe {
+  0%, 100% { box-shadow: 0 0 0 1px color-mix(in oklab, var(--k) 30%, transparent), 0 0 0 0 color-mix(in oklab, var(--k) 0%, transparent); }
+  50% { box-shadow: 0 0 0 1px color-mix(in oklab, var(--k) 50%, transparent), 0 0 14px -4px var(--k); }
+}
+#cad-term .cad-ext.is-busy { animation: cad-ext-breathe 2.4s ease-in-out infinite; }
+
+/* ---------- view switch ---------- */
+#cad-term .cad-viewbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 0 0 10px;
+  min-width: 0;
+}
+
+/* ---------- live execution view (the main diagram) ---------- */
+#cad-term .cad-live {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 26px;
+  padding: 2px 8px 0;
+  min-width: 0;
+}
+#cad-term .cad-live-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  max-width: 520px;
+  min-width: 0;
+}
+#cad-term .cad-live-flow {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 26px;
+  width: 100%;
+  min-width: 0;
+}
+#cad-term .lv-slot { display: flex; justify-content: center; width: 100%; min-width: 0; }
+#cad-term .lv-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(0, 170px));
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+#cad-term .lv-node { max-width: 520px; min-width: 0; --k: var(--cad-cy); }
+#cad-term .lv-in { --k: var(--cad-dim); }
+#cad-term .lv-hub { --k: var(--cad-cy); background: var(--cad-panel2); border-color: color-mix(in oklab, var(--cad-cy) 45%, var(--cad-line2)); }
+#cad-term .lv-exec, #cad-term .lv-child { --k: var(--cad-gr); border-color: color-mix(in oklab, var(--cad-gr) 40%, var(--cad-line2)); }
+#cad-term .lv-back { --k: var(--cad-am); background: var(--cad-panel2); border-color: color-mix(in oklab, var(--cad-am) 40%, var(--cad-line2)); }
+#cad-term .cad-live-note { margin: 0; color: var(--cad-dim2); font-size: 11px; overflow-wrap: anywhere; }
+
+/* The flow is read off the real state, not played back: a wire only carries a
+   dash while the node it runs into is genuinely active, so a terminal run, a
+   finished sibling or an unknown status leaves the diagram completely still. */
+@keyframes cad-flow { to { stroke-dashoffset: -24; } }
+#cad-term .cad-wires path.cad-w.is-flow {
+  stroke: var(--cad-cy);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-dasharray: 6 6;
+  animation: cad-flow 1.2s linear infinite;
+}
+@keyframes cad-lv-breathe {
+  0%, 100% { box-shadow: 0 0 0 1px color-mix(in oklab, var(--k) 28%, transparent), 0 0 0 0 transparent; }
+  50% { box-shadow: 0 0 0 1px color-mix(in oklab, var(--k) 52%, transparent), 0 0 14px -4px var(--k); }
+}
+#cad-term .lv-node.is-live { animation: cad-lv-breathe 2.4s ease-in-out infinite; }
+
+/* ---------- jev fork layer ---------- */
+#cad-term .cad-jev {
+  max-width: 310px;
+  --k: var(--cad-gr);
+  background: color-mix(in oklab, var(--cad-gr) 6%, var(--cad-panel));
+  border-color: color-mix(in oklab, var(--cad-gr) 40%, var(--cad-line2));
+}
+#cad-term .cad-jev-h { display: flex; align-items: center; gap: 6px; }
+#cad-term .cad-mini {
+  display: inline-block;
+  padding: 0 4px;
+  border: 1px solid var(--cad-line2);
+  border-radius: 2px;
+  color: var(--cad-dim2);
+  font-size: 11px;
+  white-space: nowrap;
+}
+#cad-term .cad-jrow {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  margin-top: 2px;
+  padding: 1px 5px;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--cad-dim);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+#cad-term .cad-jrow .cad-jv { flex: 0 0 auto; color: var(--cad-gr); }
+#cad-term .cad-chip {
+  flex: 1 1 0;
+  min-width: 0;
+  text-align: center;
+  padding: 1px 4px;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--cad-dim2);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+#cad-term .cad-jbranches { display: flex; gap: 5px; width: 100%; margin-top: 3px; }
+
+/* ---------- fan-out bus ---------- */
+#cad-term .cad-bus { position: relative; width: 100%; height: 13px; flex: 0 0 auto; }
+#cad-term .cad-bus::before {
+  content: "";
+  position: absolute;
+  left: 0; right: 0; top: 6px;
+  height: 1px;
+  background: var(--cad-line2);
+}
+#cad-term .cad-bus-t {
+  position: absolute;
+  left: 50%; top: 0;
+  transform: translateX(-50%);
+  padding: 0 5px;
+  background: var(--cad-bg);
+  color: var(--cad-dim2);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* ---------- role row ---------- */
+#cad-term .cad-roles {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  width: 100%;
+}
+#cad-term .cad-role { --k: var(--cad-bl); border-color: color-mix(in oklab, var(--cad-bl) 55%, var(--cad-line2)); }
+
+/* ---------- architect sidebar (single tall panel) ---------- */
+#cad-term .cad-astra {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  padding: 4px 4px 5px;
+  --k: var(--cad-pu);
+  background: color-mix(in oklab, var(--cad-pu) 8%, var(--cad-panel));
+  border: 1px solid color-mix(in oklab, var(--cad-pu) 65%, var(--cad-line2));
+  border-radius: 2px;
+}
+#cad-term .cad-astra-h {
+  padding: 3px 6px;
+  background: transparent;
+  border-color: transparent;
+}
+#cad-term .cad-astra-h .cad-node-t { font-size: 12px; }
+#cad-term .cad-gates {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 3px;
+  margin: 2px 0 0 4px;
+  padding-left: 6px;
+  border-left: 1px dashed color-mix(in oklab, var(--cad-pu) 45%, var(--cad-line2));
+  min-height: 0;
+}
+#cad-term .cad-gate {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 3px 5px;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  --k: var(--cad-pu);
+  transition: border-color .15s linear, box-shadow .15s linear, background-color .15s linear;
+}
+button.cad-gate { cursor: pointer; width: 100%; text-align: left; font: inherit; color: var(--cad-fg); }
+button.cad-gate:hover { border-color: color-mix(in oklab, var(--cad-pu) 55%, var(--cad-line2)); }
+#cad-term .cad-gate.is-on {
+  border-color: var(--cad-pu);
+  background: color-mix(in oklab, var(--cad-pu) 13%, var(--cad-panel2));
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--cad-pu) 32%, transparent), 0 0 12px -7px var(--cad-pu);
+}
+#cad-term .cad-gate[aria-pressed="true"] { box-shadow: inset 2px 0 0 var(--cad-pu); }
+#cad-term .cad-gate-t { font-size: 11px; color: var(--cad-fg); overflow-wrap: anywhere; }
+#cad-term .cad-gnote {
+  padding-left: 7px;
+  color: var(--cad-dim2);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+/* ---------- control bar ---------- */
+#cad-term .cad-ctl {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px 9px;
+  margin: 8px 0 0;
+  padding: 6px 8px;
+  border-top: 1px solid var(--cad-line);
+  background: var(--cad-panel2);
+}
+#cad-term .cad-btn {
+  font: inherit;
+  padding: 2px 9px;
+  min-height: 26px;
+  border-radius: 2px;
+  border: 1px solid var(--cad-cy);
+  background: color-mix(in oklab, var(--cad-cy) 13%, var(--cad-bg2));
+  color: var(--cad-cy);
+  cursor: pointer;
+  transition: background-color .15s linear, color .15s linear, border-color .15s linear;
+}
+#cad-term .cad-btn.alt {
+  border-color: var(--cad-line2);
+  background: var(--cad-bg);
+  color: var(--cad-dim);
+}
+#cad-term .cad-btn.alt:hover { border-color: var(--cad-dim2); color: var(--cad-fg); }
+#cad-term .cad-btn.warn {
+  border-color: var(--cad-rd);
+  background: color-mix(in oklab, var(--cad-rd) 12%, var(--cad-bg2));
+  color: var(--cad-rd);
+}
+#cad-term .cad-btn.tiny { min-height: 22px; padding: 1px 7px; font-size: 11px; }
+#cad-term .cad-btn:disabled { opacity: .5; cursor: not-allowed; }
+#cad-term .cad-state { color: var(--cad-dim); font-size: 11px; overflow-wrap: anywhere; }
+#cad-term .cad-tag {
+  display: inline-block;
+  padding: 1px 6px;
+  border: 1px solid var(--cad-line2);
+  border-radius: 2px;
+  background: var(--cad-bg2);
+  color: var(--cad-dim);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+#cad-term .cad-tag.sess { color: var(--cad-cy); border-color: color-mix(in oklab, var(--cad-cy) 50%, var(--cad-line2)); }
+#cad-term .cad-tag.warn { color: var(--cad-am); border-color: color-mix(in oklab, var(--cad-am) 55%, var(--cad-line2)); }
+#cad-term .cad-tag.bad { color: var(--cad-rd); border-color: color-mix(in oklab, var(--cad-rd) 55%, var(--cad-line2)); }
+#cad-term .cad-tag.good { color: var(--cad-gr); border-color: color-mix(in oklab, var(--cad-gr) 50%, var(--cad-line2)); }
+#cad-term .cad-spacer { flex: 1 1 8px; }
+
+/* ---------- panels ---------- */
+#cad-term .cad-panelbox {
+  margin: 7px 0 0;
+  padding: 6px 8px 8px;
+  border-top: 1px solid var(--cad-line);
+  background: var(--cad-bg);
+}
+#cad-term .cad-ph {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 3px 9px;
+  margin-bottom: 5px;
+  color: var(--cad-dim);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+}
+#cad-term .cad-ph b { color: var(--cad-cy); font-weight: 500; letter-spacing: 0.05em; }
+#cad-term .cad-ph .cad-state { margin-left: auto; text-align: right; }
+
+/* ---------- task form ---------- */
+#cad-term .cad-frow {
+  display: grid;
+  grid-template-columns: 74px minmax(0, 1fr);
+  align-items: center;
+  gap: 4px 7px;
+  margin-bottom: 5px;
+}
+#cad-term .cad-lbl { color: var(--cad-dim); font-size: 11px; }
+#cad-term .cad-in, #cad-term .cad-sel, #cad-term .cad-ta {
+  font: inherit;
+  font-size: 12px;
+  width: 100%;
+  min-width: 0;
+  min-height: 26px;
+  padding: 3px 6px;
+  color: var(--cad-fg);
+  background: var(--cad-panel2);
+  border: 1px solid var(--cad-line2);
+  border-radius: 2px;
+}
+#cad-term .cad-ta { resize: vertical; min-height: 62px; line-height: 1.5; }
+#cad-term .cad-in:disabled, #cad-term .cad-sel:disabled, #cad-term .cad-ta:disabled { opacity: .55; }
+#cad-term .cad-in::placeholder, #cad-term .cad-ta::placeholder { color: var(--cad-dim2); opacity: .8; }
+#cad-term .cad-acts { display: flex; flex-wrap: wrap; gap: 5px 7px; margin-top: 6px; }
+#cad-term .cad-msg { margin-top: 5px; font-size: 11px; overflow-wrap: anywhere; }
+#cad-term .cad-msg:empty { display: none; }
+#cad-term .cad-msg.bad { color: var(--cad-rd); }
+#cad-term .cad-msg.ok { color: var(--cad-gr); }
+#cad-term .cad-msg.warn { color: var(--cad-am); }
+#cad-term .cad-src {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 7px;
+  margin-top: 5px;
+  font-size: 11px;
+  color: var(--cad-dim2);
+  overflow-wrap: anywhere;
+}
+
+/* ---------- job list ---------- */
+#cad-term .cad-jobs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 190px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+#cad-term .cad-job {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  width: 100%;
+  padding: 3px 6px;
+  text-align: left;
+  font: inherit;
+  color: var(--cad-fg);
+  background: var(--cad-panel2);
+  border: 1px solid var(--cad-line);
+  border-left-width: 3px;
+  border-radius: 2px;
+  cursor: pointer;
+}
+#cad-term .cad-job:hover { border-color: var(--cad-line2); }
+#cad-term .cad-job.is-sel { border-color: var(--cad-cy); }
+#cad-term .cad-job.st-run { border-left-color: var(--cad-am); }
+#cad-term .cad-job.st-ok { border-left-color: var(--cad-gr); }
+#cad-term .cad-job.st-err { border-left-color: var(--cad-rd); }
+#cad-term .cad-job.st-idle { border-left-color: var(--cad-line2); }
+#cad-term .cad-job-l1 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 3px 7px; }
+#cad-term .cad-jr { color: var(--cad-bl); font-size: 12px; }
+#cad-term .cad-jg { color: var(--cad-pu); font-size: 11px; }
+#cad-term .cad-js { font-size: 11px; }
+#cad-term .cad-js.st-run { color: var(--cad-am); }
+#cad-term .cad-js.st-ok { color: var(--cad-gr); }
+#cad-term .cad-js.st-err { color: var(--cad-rd); }
+#cad-term .cad-js.st-idle { color: var(--cad-dim); }
+#cad-term .cad-jid { color: var(--cad-dim); font-size: 11px; overflow-wrap: anywhere; min-width: 0; }
+#cad-term .cad-jl2 { display: flex; flex-wrap: wrap; gap: 2px 8px; color: var(--cad-dim2); font-size: 11px; overflow-wrap: anywhere; }
+#cad-term .cad-empty { color: var(--cad-dim2); font-size: 11px; padding: 2px 0; }
+
+/* ---------- result ---------- */
+#cad-term .cad-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 9px;
+  margin-bottom: 5px;
+  font-size: 11px;
+  color: var(--cad-dim);
+}
+#cad-term .cad-meta b { color: var(--cad-dim2); font-weight: 400; }
+#cad-term .cad-meta .v { color: var(--cad-fg); overflow-wrap: anywhere; min-width: 0; }
+#cad-term .cad-body {
+  max-height: 230px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 5px 7px;
+  background: var(--cad-bg2);
+  border: 1px solid var(--cad-line);
+  border-radius: 2px;
+  color: var(--cad-fg);
+  font-size: 11.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+#cad-term .cad-body.muted { color: var(--cad-dim2); }
+#cad-term .cad-body.err { color: var(--cad-rd); border-color: color-mix(in oklab, var(--cad-rd) 45%, var(--cad-line)); }
+
+/* ---------- log ---------- */
+#cad-term .cad-log {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  max-height: 128px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 5px 8px 7px;
+  border-top: 1px solid var(--cad-line);
+  background: var(--cad-bg);
+}
+#cad-term .cad-logline {
+  display: flex;
+  gap: 8px;
+  color: var(--cad-dim);
+  font-size: 11px;
+}
+#cad-term .cad-logline .cad-t { color: var(--cad-dim2); flex: 0 0 auto; }
+#cad-term .cad-logline .cad-m { min-width: 0; overflow-wrap: anywhere; }
+#cad-term .cad-logline.act .cad-m { color: var(--cad-cy); }
+#cad-term .cad-logline.err .cad-m { color: var(--cad-rd); }
+#cad-term .cad-logline.warn .cad-m { color: var(--cad-am); }
+
+/* ---------- collapsed disclosures ---------- */
+#cad-term .cad-disc {
+  border-top: 1px solid var(--cad-line);
+  background: var(--cad-panel2);
+}
+#cad-term .cad-sum {
+  padding: 6px 8px;
+  color: var(--cad-dim);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+#cad-term .cad-sum::marker { color: var(--cad-dim2); }
+#cad-term .cad-sum b { color: var(--cad-cy); font-weight: 500; }
+#cad-term .cad-rules {
+  list-style: none;
+  margin: 0;
+  padding: 0 8px 9px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+#cad-term .cad-rules li {
+  position: relative;
+  padding-left: 11px;
+  color: var(--cad-dim);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+#cad-term .cad-rules li::before { content: "-"; position: absolute; left: 0; color: var(--cad-dim2); }
+#cad-term .cad-rules b { color: var(--cad-fg); font-weight: 500; }
+
+/* ---------- diff reader ---------- */
+#cad-term .cad-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 0 8px 7px;
+}
+#cad-term .cad-filebtn {
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 7px;
+  min-height: 24px;
+  border-radius: 2px;
+  border: 1px solid var(--cad-line2);
+  background: var(--cad-bg);
+  color: var(--cad-dim);
+  overflow-wrap: anywhere;
+  cursor: pointer;
+  transition: border-color .15s linear, color .15s linear, background-color .15s linear;
+}
+#cad-term .cad-filebtn:hover { border-color: var(--cad-dim2); color: var(--cad-fg); }
+#cad-term .cad-filebtn.is-sel {
+  border-color: var(--cad-cy);
+  color: var(--cad-cy);
+  background: color-mix(in oklab, var(--cad-cy) 12%, var(--cad-bg));
+}
+#cad-term .cad-dmeta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  padding: 5px 8px;
+  border-top: 1px solid var(--cad-line);
+  border-bottom: 1px solid var(--cad-line);
+  background: var(--cad-bg2);
+  font-size: 11px;
+}
+#cad-term .cad-cpath { color: var(--cad-fg); overflow-wrap: anywhere; min-width: 0; }
+#cad-term .cad-stat { color: var(--cad-dim); }
+#cad-term .cad-diffs { padding: 0; }
+#cad-term .cad-d {
+  margin: 0;
+  padding: 7px 8px 9px;
+  background: var(--cad-bg2);
+  color: var(--cad-fg);
+  font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, "Cascadia Mono", "DejaVu Sans Mono", Consolas, monospace;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+#cad-term .cad-d[hidden] { display: none; }
+#cad-term .cad-d code { font: inherit; background: none; border: 0; padding: 0; }
+#cad-term .cad-l { display: block; white-space: pre-wrap; padding-left: 1ch; text-indent: -1ch; }
+#cad-term .cad-ln-a { background: color-mix(in oklab, var(--cad-gr) 13%, transparent); }
+#cad-term .cad-ln-d { background: color-mix(in oklab, var(--cad-rd) 13%, transparent); }
+#cad-term .cad-hd { color: var(--cad-dim); }
+#cad-term .cad-hu { color: var(--cad-bl); }
+#cad-term .mk-a { color: var(--cad-gr); }
+#cad-term .mk-d { color: var(--cad-rd); }
+#cad-term .cad-foot {
+  padding: 6px 8px 8px;
+  color: var(--cad-dim2);
+  border-top: 1px solid var(--cad-line);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+/* ---------- narrow (stacked sidebar above flow) ---------- */
+#cad-term.is-narrow { font-size: 11px; }
+#cad-term.is-narrow .cad-board { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+#cad-term.is-narrow .cad-gates { flex: 0 0 auto; }
+#cad-term.is-narrow .cad-flow { gap: 12px; }
+#cad-term.is-narrow .cad-main,
+#cad-term.is-narrow .cad-jev,
+#cad-term.is-narrow .cad-back { max-width: none; }
+#cad-term.is-narrow .cad-frow { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+#cad-term.is-narrow .cad-fnote { margin-left: 0; }
+
+@media (pointer: coarse) {
+  #cad-term button,
+  #cad-term summary,
+  #cad-term .cad-in,
+  #cad-term .cad-sel,
+  #cad-term .cad-ta { min-height: 44px; }
+  #cad-term .cad-btn.tiny { min-height: 44px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #cad-term .cad-node,
+  #cad-term .cad-gate,
+  #cad-term .cad-job,
+  #cad-term .cad-filebtn,
+  #cad-term .cad-btn { transition: none; }
+  #cad-term .cad-ext.is-busy { animation: none; }
+  /* Reduced motion keeps the static highlight of what is actually running. */
+  #cad-term .lv-node.is-live { animation: none; box-shadow: 0 0 0 2px var(--k); }
+  #cad-term .cad-wires path.cad-w.is-flow {
+    animation: none;
+    stroke-dasharray: none;
+    stroke-width: 2;
+  }
+}
+</style>
+</head>
+<body>
+
+<div id="cad-term">
+  <p class="cad-sr">DSH 代理调用控制台。主图默认为真实执行视图：MCP 任务输入、DSH 调度与当前真实阶段、真实执行节点、返回待验收，边只在真实运行时流动，外部任务角色未知。拟议角色架构与手动调用在同一个开关后面。点角色或闸门选择真实调用角色，architect 可选择计划前、重复错误或完成前审查。Jev 尚未接入，原模型配置差异尚未应用。</p>
+
+  <div class="cad-chrome">
+    <span class="cad-dot d1" aria-hidden="true"></span>
+    <span class="cad-dot d2" aria-hidden="true"></span>
+    <span class="cad-dot d3" aria-hidden="true"></span>
+    <span class="cad-title">DSH AGENT CONSOLE | <b>HEADLESS LIVE</b> | ARCHITECT ON CALL</span>
+  </div>
+
+  <div class="cad-legend" id="cad-legend">
+    <span><b>点角色或闸门</b> = 选择真实调用角色</span>
+    <span><b>architect</b> 只在 3 个闸门被调用，且只审阅</span>
+    <span><b>JEV</b> 未接入 · 不可调用</span>
+  </div>
+
+  <div class="cad-runtime">
+    <span><b>后端</b> <span class="v" id="rt-backend">读取中</span></span>
+    <span><b>底层模型</b> <span class="v" id="rt-model">DSH配置决定</span></span>
+    <span><b>调用角色</b> <span class="v" id="rt-role">未选择</span></span>
+    <span><b>连接</b> <span class="v" id="rt-conn">连接中</span></span>
+    <span><b>工作区</b> <span class="v" id="rt-root">&mdash;</span></span>
+    <button type="button" class="cad-btn alt tiny" id="cad-mcp-live" disabled aria-live="polite">MCP 调用 · 等待同步</button>
+    <span class="cad-note-inline">手动调用 · 原模型配置差异尚未应用</span>
+  </div>
+
+  <div class="cad-stage" id="cad-stage">
+    <svg class="cad-wires" id="cad-wires" aria-hidden="true" focusable="false"></svg>
+    <svg class="cad-wires" id="lv-wires" aria-hidden="true" focusable="false"></svg>
+
+    <!-- The stage carries two diagrams and shows the real one by default.
+         The proposed role architecture keeps every node id, listener and form
+         field it had; it is one native toggle away and is labelled as proposed. -->
+    <div class="cad-viewbar">
+      <button type="button" class="cad-btn alt tiny" id="cad-view-toggle" aria-pressed="false">查看拟议角色架构 · 手动调用</button>
+      <span class="cad-note-inline" id="cad-view-note">主图为真实执行视图 · 只画服务端返回的执行事实</span>
+    </div>
+
+    <div class="cad-live" id="cad-live">
+      <div class="cad-live-head">
+        <span class="cad-mini" id="lv-tag">真实执行</span>
+        <button type="button" class="cad-btn alt tiny" id="lv-follow">跟随运行</button>
+        <span class="cad-state" id="lv-head" aria-live="polite">等待服务端任务…</span>
+      </div>
+      <div class="cad-live-flow" id="lv-flow"></div>
+      <p class="cad-live-note" id="lv-note"></p>
+    </div>
+
+    <!-- A real external run has no role in this console, so it gets its own visible
+         node instead of pretending to be main/worker/architect. No data-role: it never
+         joins the role tree, and it draws no execution edge to any role. It belongs
+         to the proposed-architecture view; in the live view the same run is drawn as
+         the real execution graph below the toggle. -->
+    <button type="button" class="cad-node cad-ext" id="n-ext">
+      <span class="cad-node-t">MCP 外部执行 · 角色未知</span>
+      <span class="cad-node-m">外部 DSH 任务 · 本界面不掌握角色</span>
+      <span class="cad-node-d" id="n-ext-count">运行中 0 个 · 等待同步</span>
+      <span class="cad-node-r" id="n-ext-live" aria-live="polite">暂无外部 MCP 任务记录</span>
+    </button>
+    <div class="cad-board" id="cad-board">
+
+      <section class="cad-node cad-astra" aria-label="architect 侧栏">
+        <button type="button" class="cad-node cad-astra-h" id="n-astra" data-role="architect" aria-pressed="false">
+          <span class="cad-node-t">ARCHITECT · 审阅角色</span>
+          <span class="cad-node-m">DSH headless</span>
+          <span class="cad-node-e">按需调用 · 只审阅</span>
+          <span class="cad-node-r" data-live="architect"></span>
+        </button>
+
+        <div class="cad-gates">
+          <button type="button" class="cad-gate cad-g1" id="g1" data-role="architect" data-gate="before_plan">
+            <span class="cad-gate-t">A1 大型计划之前</span>
+            <span class="cad-node-d">gate: before_plan</span>
+            <span class="cad-node-r" data-live="architect:before_plan"></span>
+          </button>
+          <div class="cad-gnote">main 主动发起</div>
+
+          <button type="button" class="cad-gate cad-g2" id="g2" data-role="architect" data-gate="repeated_error">
+            <span class="cad-gate-t">A2 相同错误重复</span>
+            <span class="cad-node-d">gate: repeated_error</span>
+            <span class="cad-node-r" data-live="architect:repeated_error"></span>
+          </button>
+          <div class="cad-gnote">main 采纳审阅意见</div>
+
+          <button type="button" class="cad-gate cad-g3" id="g3" data-role="architect" data-gate="before_done">
+            <span class="cad-gate-t">A3 长任务完成之前</span>
+            <span class="cad-node-d">gate: before_done</span>
+            <span class="cad-node-r" data-live="architect:before_done"></span>
+          </button>
+          <div class="cad-gnote">architect 不写代码</div>
+        </div>
+      </section>
+
+      <div class="cad-flow">
+        <button type="button" class="cad-node cad-main" id="n-sol" data-role="main" aria-pressed="false">
+          <span class="cad-node-t">MAIN · main</span>
+          <span class="cad-node-m">DSH headless</span>
+          <span class="cad-node-d">计划 · 协调实现 · 汇总</span>
+          <span class="cad-node-r" data-live="main"></span>
+        </button>
+
+        <div class="cad-node cad-jev" id="n-jev">
+          <span class="cad-jev-h">
+            <span class="cad-node-t">JEV FORK</span>
+            <span class="cad-mini">未接入 · 不可调用</span>
+          </span>
+          <span class="cad-jrow cad-route" id="r-file"><span>哪个文件</span><span class="cad-jv">&rarr; code</span></span>
+          <span class="cad-jrow cad-route" id="r-tool"><span>哪个工具</span><span class="cad-jv">&rarr; code</span></span>
+          <span class="cad-jrow cad-route" id="r-stop"><span>重试或停止</span><span class="cad-jv">&rarr; code</span></span>
+          <span class="cad-jbranches">
+            <span class="cad-chip" id="b-sharp">sharp &rarr; code</span>
+            <span class="cad-chip" id="b-split">split &rarr; main</span>
+          </span>
+          <span class="cad-node-d">概念示意层，没有任何可调用端点</span>
+        </div>
+
+        <div class="cad-bus" id="n-bus"><span class="cad-bus-t">MAIN DISPATCH &middot; 并行 3 路（手动）</span></div>
+
+        <div class="cad-roles">
+          <button type="button" class="cad-node cad-role" id="n-worker" data-role="worker" aria-pressed="false">
+            <span class="cad-node-t">worker</span>
+            <span class="cad-node-m">DSH headless</span>
+            <span class="cad-node-e">并行角色</span>
+            <span class="cad-node-d">改代码 + 跑测试</span>
+            <span class="cad-node-r" data-live="worker"></span>
+          </button>
+          <button type="button" class="cad-node cad-role" id="n-explorer" data-role="explorer" aria-pressed="false">
+            <span class="cad-node-t">explorer</span>
+            <span class="cad-node-m">DSH headless</span>
+            <span class="cad-node-e">并行角色</span>
+            <span class="cad-node-d">读代码</span>
+            <span class="cad-node-r" data-live="explorer"></span>
+          </button>
+          <button type="button" class="cad-node cad-role" id="n-researcher" data-role="researcher" aria-pressed="false">
+            <span class="cad-node-t">researcher</span>
+            <span class="cad-node-m">DSH headless</span>
+            <span class="cad-node-e">并行角色</span>
+            <span class="cad-node-d">拉文档</span>
+            <span class="cad-node-r" data-live="researcher"></span>
+          </button>
+        </div>
+
+        <button type="button" class="cad-node cad-back" id="n-back" data-role="main" aria-pressed="false">
+          <span class="cad-node-t">back to main &middot; review + verify</span>
+          <span class="cad-node-m">DSH headless &middot; main 汇总与校验</span>
+          <span class="cad-node-d">原审批配置仍待确认</span>
+          <span class="cad-node-r" data-live="main:back"></span>
+        </button>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="cad-ctl">
+    <span class="cad-tag sess">DSH / headless</span>
+    <span class="cad-state" id="cad-state" aria-live="polite">连接后端…</span>
+    <span class="cad-spacer"></span>
+    <button type="button" class="cad-btn alt tiny" id="cad-refresh">刷新</button>
+    <button type="button" class="cad-btn alt tiny" id="cad-open-diff">拟议差异 · 6 份</button>
+  </div>
+
+  <section class="cad-panelbox" aria-labelledby="h-call">
+    <div class="cad-ph" id="h-call"><b>CALL SELECTED AGENT</b><span>切换到角色架构选角色 &rarr; 填任务 &rarr; 真实提交</span></div>
+
+    <form id="cad-form" novalidate>
+      <div class="cad-frow">
+        <span class="cad-lbl" id="lbl-role">调用角色</span>
+        <span class="cad-state" id="f-role" aria-describedby="lbl-role">未选择 &middot; 点击 main / worker / explorer / researcher / architect</span>
+      </div>
+
+      <div class="cad-frow">
+        <label class="cad-lbl" for="f-gate">审查时机</label>
+        <select class="cad-sel" id="f-gate" disabled aria-describedby="lbl-gate">
+          <option value="before_plan">A1 before_plan &middot; 大型计划之前</option>
+          <option value="repeated_error">A2 repeated_error &middot; 相同错误重复</option>
+          <option value="before_done">A3 before_done &middot; 长任务完成之前</option>
+        </select>
+      </div>
+      <div class="cad-gnote cad-fnote" id="lbl-gate">选择 architect 时可指定审查时机。</div>
+
+      <div class="cad-frow">
+        <label class="cad-lbl" for="f-task">任务</label>
+        <textarea class="cad-ta" id="f-task" rows="3" maxlength="12000" placeholder="写给该角色的真实任务，非空，最多 12000 字符"></textarea>
+      </div>
+
+      <div class="cad-frow">
+        <label class="cad-lbl" for="f-cwd">工作目录</label>
+        <input class="cad-in" id="f-cwd" type="text" spellcheck="false" autocomplete="off" placeholder="工作区内的绝对路径">
+      </div>
+
+      <div class="cad-src" id="f-src"></div>
+
+      <div class="cad-acts">
+        <button type="submit" class="cad-btn" id="f-send">调用所选 agent</button>
+        <button type="button" class="cad-btn warn" id="f-cancel" disabled>取消当前任务</button>
+        <button type="button" class="cad-btn alt tiny" id="f-retry" hidden>重试本次提交</button>
+        <span class="cad-spacer"></span>
+        <span class="cad-tag" id="f-reqid" hidden></span>
+      </div>
+      <p class="cad-msg" id="f-msg" role="status" aria-live="polite"></p>
+    </form>
+  </section>
+
+  <section class="cad-panelbox" aria-labelledby="h-jobs">
+    <div class="cad-ph" id="h-jobs"><b>RECENT JOBS</b><span class="cad-state" id="jobs-state">&mdash;</span></div>
+    <div class="cad-jobs" id="cad-jobs"></div>
+  </section>
+
+  <section class="cad-panelbox" aria-labelledby="h-res">
+    <div class="cad-ph" id="h-res"><b>RETURNED DETAIL</b><span class="cad-state">来自服务端真实返回</span></div>
+    <div class="cad-meta" id="res-meta"></div>
+    <div class="cad-body muted" id="res-body">尚未选中任务。</div>
+  </section>
+
+  <div class="cad-log" id="cad-log" role="log" aria-live="polite" aria-label="本地事件日志">
+    <div class="cad-logline"><span class="cad-t">--:--</span><span class="cad-m">app log &middot; 尚未产生事件</span></div>
+  </div>
+
+  <details class="cad-disc" id="cad-notes">
+    <summary class="cad-sum">RUNTIME NOTES &middot; 现状说明（未改动）</summary>
+    <ul class="cad-rules">
+      <li><b>执行路径是现有 DSH headless</b> &mdash; 不变；本页面不新增任何 agent、配置或依赖</li>
+      <li><b>下方 6 份 diff 全部是拟议内容</b>，未写入任何 config / agents TOML / AGENTS.md；其中的 gpt-6.1-sol、gpt-6-luna、gpt-6-astra、approvals_reviewer = "auto_review" 只是文本</li>
+      <li><b>界面只选择调用角色</b>（main / worker / explorer / researcher / architect），不代表底层模型选择；底层模型由 DSH 配置决定</li>
+      <li><b>JEV FORK 未接入</b> &mdash; 树里的分流层是概念示意，没有任何可调用端点</li>
+      <li><b>没有自动编排</b> &mdash; 团队、审阅轮次、闸门触发都需要手动点选提交；没有演示数据或模拟运行</li>
+      <li>任务状态直接反映服务端：<b>done / awaiting_review 一律显示"已返回·待验收"</b>，不代表已被接受</li>
+    </ul>
+  </details>
+
+  <details class="cad-disc" id="cad-drawer">
+    <summary class="cad-sum">PROPOSED DIFFS &middot; 6 份拟议差异（未应用） &middot; <b>+58 / -1</b></summary>
+
+    <div class="cad-files" id="cad-files" role="group" aria-label="选择要查看的文件">
+      <button type="button" class="cad-filebtn" data-file="config-toml" aria-pressed="true">config.toml</button>
+      <button type="button" class="cad-filebtn" data-file="explorer-toml" aria-pressed="false">explorer.toml</button>
+      <button type="button" class="cad-filebtn" data-file="worker-toml" aria-pressed="false">worker.toml</button>
+      <button type="button" class="cad-filebtn" data-file="researcher-toml" aria-pressed="false">researcher.toml</button>
+      <button type="button" class="cad-filebtn" data-file="architect-toml" aria-pressed="false">architect.toml</button>
+      <button type="button" class="cad-filebtn" data-file="agents-md" aria-pressed="false">AGENTS.md</button>
+    </div>
+
+    <div class="cad-dmeta">
+      <span class="cad-tag" id="cad-kind">修改</span>
+      <span class="cad-cpath" id="cad-path">/Users/as1379898680/.codex/config.toml</span>
+      <span class="cad-spacer"></span>
+      <span class="cad-stat tabular-nums"><span class="mk-a">+2</span> / <span class="mk-d">-1</span></span>
+    </div>
+
+    <div class="cad-diffs">
+
+<pre class="cad-d" data-key="config-toml"><code><span class="cad-l cad-hd"><span class="mk-d">---</span> /Users/as1379898680/.codex/config.toml</span>
+<span class="cad-l cad-hd"><span class="mk-a">+++</span> /Users/as1379898680/.codex/config.toml</span>
+<span class="cad-l cad-hu">@@ -10,6 +10,7 @@</span>
+<span class="cad-l"> personality = "pragmatic"</span>
+<span class="cad-l"> approval_policy = "never"</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>approvals_reviewer = "auto_review"</span>
+<span class="cad-l"> sandbox_mode = "danger-full-access"</span>
+<span class="cad-l"> model = "gpt-6.1-sol"</span>
+<span class="cad-l cad-ln-d"><span class="mk-d">-</span>model_reasoning_effort = "ultra"</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>model_reasoning_effort = "high"</span>
+<span class="cad-l"> service_tier = "default"</span></code></pre>
+
+<pre class="cad-d" data-key="explorer-toml" hidden><code><span class="cad-l cad-hd"><span class="mk-d">---</span> /dev/null</span>
+<span class="cad-l cad-hd"><span class="mk-a">+++</span> /Users/as1379898680/.codex/agents/explorer.toml</span>
+<span class="cad-l cad-hu">@@ -0,0 +1,12 @@</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>name = "explorer"</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>description = "Read-only code explorer for files, symbols, callers, and data flow."</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>model = "gpt-6-luna"</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>model_reasoning_effort = "medium"</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>sandbox_mode = "read-only"</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span></span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>developer_instructions = """</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>Read relevant code and trace callers and data flow before drawing conclusions.</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>Use focused searches. Cite file paths and line numbers for findings.</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>Return concise evidence and state unresolved questions.</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>Do not edit files, run mutating commands, or delegate to other agents.</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>"""</span></code></pre>
+
+<pre class="cad-d" data-key="worker-toml" hidden><code><span class="cad-l cad-hd"><span class="mk-d">---</span> /dev/null</span>
+<span class="cad-l cad-hd"><span class="mk-a">+++</span> /Users/as1379898680/.codex/agents/worker.toml</span>
+<span class="cad-l cad-hu">@@ -0,0 +1,11 @@</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>name = "worker"</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>description = "Implementation worker for bounded code changes and relevant tests."</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>model = "gpt-6.1-sol"</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>model_reasoning_effort = "medium"</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span></span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>developer_instructions = """</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>Implement the assigned task only within the parent's stated write scope.</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>Preserve unrelated changes and reuse existing code and patterns.</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>Run checks appropriate to the change. Report changed paths, results, and limits.</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>Do not delegate to other agents.</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>"""</span></code></pre>
+
+<pre class="cad-d" data-key="researcher-toml" hidden><code><span class="cad-l cad-hd"><span class="mk-d">---</span> /dev/null</span>
+<span class="cad-l cad-hd"><span class="mk-a">+++</span> /Users/as1379898680/.codex/agents/researcher.toml</span>
+<span class="cad-l cad-hu">@@ -0,0 +1,12 @@</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>name = "researcher"</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>description = "Read-only researcher for primary documentation and external evidence."</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>model = "gpt-6-luna"</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>model_reasoning_effort = "medium"</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>sandbox_mode = "read-only"</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span></span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>developer_instructions = """</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>Find primary documentation relevant to the assigned question and version.</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>Cite source URLs and distinguish verified facts from inference.</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>Return concise findings and state what remains unverified.</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>Do not edit files, run mutating commands, or delegate to other agents.</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>"""</span></code></pre>
+
+<pre class="cad-d" data-key="architect-toml" hidden><code><span class="cad-l cad-hd"><span class="mk-d">---</span> /dev/null</span>
+<span class="cad-l cad-hd"><span class="mk-a">+++</span> /Users/as1379898680/.codex/agents/architect.toml</span>
+<span class="cad-l cad-hu">@@ -0,0 +1,14 @@</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>name = "architect"</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>description = "On-demand reviewer for large plans, repeated errors, and long-task completion."</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>model = "gpt-6-astra"</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>model_reasoning_effort = "high"</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>sandbox_mode = "read-only"</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span></span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>developer_instructions = """</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>Review only at three gates:</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>1. Before forming a large implementation plan: assess the proposed approach.</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>2. When the same error recurs: reassess assumptions and the investigation path.</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>3. Before declaring a long task complete: inspect requirements, changes, and validation.</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>Report concrete risks or gaps, the smallest correction, and a proceed/hold verdict.</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>Do not implement, edit files, run mutating commands, delegate, or review every step.</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>"""</span></code></pre>
+
+<pre class="cad-d" data-key="agents-md" hidden><code><span class="cad-l cad-hd"><span class="mk-d">---</span> /Volumes/Untitled/zido/AGENTS.md</span>
+<span class="cad-l cad-hd"><span class="mk-a">+++</span> /Volumes/Untitled/zido/AGENTS.md</span>
+<span class="cad-l cad-hu">@@ -74,3 +74,10 @@</span>
+<span class="cad-l"> - Prefer project scripts over ad-hoc one-liners.</span>
+<span class="cad-l"> </span>
+<span class="cad-l"> See also: `.xgrok/BEST_PRACTICES.md`, `.xgrok/SECURITY.md`.</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span></span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>## Codex on-demand architect review</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span></span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>- Spawn `architect` (`gpt-6-astra`, `high`) only before drafting a large implementation plan, when the same error repeats, or before declaring a long task complete.</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>- Provide the proposed approach, failed attempts, or final diff and validation evidence. Wait for review and resolve material findings before proceeding.</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>- Astra reviews; Sol implements and delivers. Do not invoke Astra for routine steps.</span>
+<span class="cad-l cad-ln-a"><span class="mk-a">+</span>- Retain existing executor routing. When Codex-native agents are selected, use the configured `explorer`, `worker`, and `researcher` roles.</span></code></pre>
+
+    </div>
+
+    <div class="cad-foot">全部 6 份源差异按原样保留，未截断。此处仍是拟议内容，预览不等于应用；实际运行的角色全部是 DSH headless。</div>
+  </details>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  var root = document.getElementById('cad-term');
+  if (!root) { return; }
+
+  /* ================= constants ================= */
+
+  var API_INFO = '/api/info';
+  var API_JOBS = '/api/jobs';
+  var MUT_HEADERS = { 'Content-Type': 'application/json', 'X-Agent-Console': '1' };
+  var POLL_MS = 8000;
+  var TASK_MAX = 12000;
+  var LS_KEY = 'dsh-console-ui-v1';
+
+  var ROLES = ['main', 'worker', 'explorer', 'researcher', 'architect'];
+  var ROLE_LABEL = {
+    main: 'main · 主协调',
+    worker: 'worker · 改代码',
+    explorer: 'explorer · 读代码',
+    researcher: 'researcher · 拉文档',
+    architect: 'architect · 只审阅'
+  };
+  /* Tasks started through some other MCP client on this machine.
+     They are listed and read for real, but this console did not create them:
+     no role is claimed for them and nothing here can cancel them. */
+  var EXTERNAL_ROLE = 'unknown';
+  var EXTERNAL_LABEL = '外部 DSH 任务 · 角色未知';
+  var WORKFLOW_LABEL = '工作流';
+  var GATE_LABEL = {
+    before_plan: 'A1 before_plan',
+    repeated_error: 'A2 repeated_error',
+    before_done: 'A3 before_done'
+  };
+
+  /* Terminal states as reported by the server.
+     done / awaiting_review are shown as "已返回·待验收" — never as an accepted success. */
+  var TERMINAL = {
+    'done': { text: '已返回·待验收', cls: 'st-ok', active: false },
+    'awaiting_review': { text: '已返回·待验收', cls: 'st-ok', active: false },
+    'failed': { text: '失败', cls: 'st-err', active: false },
+    'error': { text: '失败', cls: 'st-err', active: false },
+    'timed-out': { text: '超时', cls: 'st-err', active: false },
+    'timed_out': { text: '超时', cls: 'st-err', active: false },
+    'timeout': { text: '超时', cls: 'st-err', active: false },
+    'canceled': { text: '已取消', cls: 'st-idle', active: false },
+    'cancelled': { text: '已取消', cls: 'st-idle', active: false },
+    'unknown-after-restart': { text: '服务重启·状态待确认', cls: 'st-idle', active: false }
+  };
+  var ACTIVE_TEXT = {
+    running: '运行中', queued: '排队中', pending: '排队中',
+    starting: '启动中', in_progress: '运行中',
+    planning: '规划中', judging: '判断中', executing: '执行中'
+  };
+
+  function statusInfo(raw) {
+    var key = String(raw == null ? '' : raw).trim();
+    if (!key) { return { text: '无状态·待确认', cls: 'st-idle', active: false, unknown: true }; }
+    var low = key.toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(TERMINAL, low)) {
+      var t = TERMINAL[low];
+      return { text: t.text, cls: t.cls, active: t.active, raw: low };
+    }
+    if (Object.prototype.hasOwnProperty.call(ACTIVE_TEXT, low)) {
+      return { text: ACTIVE_TEXT[low], cls: 'st-run', active: true, raw: low };
+    }
+    return { text: '未知状态·' + key, cls: 'st-idle', active: false, unknown: true, raw: low };
+  }
+
+  /* A status this console only holds a snapshot of is labelled as one. The run
+     itself is shown exactly as the MCP tools report it; only the wording says
+     that the state came from a snapshot rather than a handle held here. */
+  function statusLabel(job) {
+    var si = statusInfo(job && job.status);
+    if (job && job.snapshot && si.active) { return { text: si.text + '·快照', cls: si.cls, active: si.active }; }
+    return si;
+  }
+
+  function isExternal(job) { return !!(job && (job.role === EXTERNAL_ROLE || job.owned === false)); }
+
+  /* External tasks carry no role in this console, so they are named by origin. */
+  function roleLabel(job) {
+    if (isExternal(job)) { return EXTERNAL_LABEL; }
+    return ROLE_LABEL[job && job.role] || (job && job.role) || '?';
+  }
+
+  /* The one place that decides which external task the header button and the
+     external node both point at, and how many external tasks are really running.
+     A genuine active run wins over a newer finished record, so an older running
+     task is never hidden behind the latest completed one; with nothing active it
+     falls back to the latest external record. Jobs arrive newest-first (sortJobs).
+     The count is read from statusLabel().active — never from a timer or a script. */
+  function externalPick(jobs) {
+    var list = jobs || [];
+    var active = 0;
+    var pick = null;
+    for (var i = 0; i < list.length; i++) {
+      if (!isExternal(list[i])) { continue; }
+      if (!statusLabel(list[i]).active) { continue; }
+      active++;
+      if (!pick) { pick = list[i]; }
+    }
+    if (!pick) { pick = list.find(isExternal) || null; }
+    return { job: pick, active: active };
+  }
+
+  /* ================= the real execution graph ================= */
+
+  /* ponytail: expand 8 children; use the returned details for larger workflows. */
+  var LV_MAX_CHILDREN = 8;
+
+  function clipText(s, n) {
+    var v = String(s == null ? '' : s).replace(/^\s+|\s+$/g, '');
+    return v.length > n ? (v.slice(0, n) + '…') : v;
+  }
+
+  /* A child reports its own status word; this console never renames it into one
+     of its own states. */
+  function childStatusText(raw) {
+    var key = String(raw == null ? '' : raw).trim();
+    if (key === 'blocked') { return '被阻塞'; }
+    return statusInfo(key).text;
+  }
+
+  /**
+   * The main diagram, as pure data, derived only from what the server reported.
+   *
+   * A dsh_start task gets exactly one execution node — never a worker, an
+   * explorer, a researcher, a JEV or an architect, because an external run's role
+   * is unknown to this console. A dsh_delegate workflow gets one node per child
+   * workflow_result actually recorded, with that child's own task_id, job_id and
+   * status; a planning or judging phase that has not produced children yet shows
+   * that phase and nothing else. Parallelism is never drawn: only the edges into
+   * nodes that are really active carry a moving dash.
+   */
+  function liveGraph(job) {
+    var out = { nodes: [], edges: [], active: false, note: '', job: job || null, kind: 'none' };
+    var edgeDefs = [];
+    var i, c;
+    if (!job) {
+      out.note = '本面板没有可跟随的真实任务：主图不画任何推测出来的节点。';
+      return out;
+    }
+    var si = statusLabel(job);
+    var wf = (job.kind === 'workflow') ? (job.workflow_result || {}) : null;
+    var kids = (wf && Array.isArray(wf.children)) ? wf.children : [];
+    var roleTxt = isExternal(job)
+      ? '角色未知 · 本界面不掌握角色'
+      : (ROLE_LABEL[job.role] || job.role || '角色未记录');
+
+    function node(key, kind, title, meta, sub, live, jobId) {
+      out.nodes.push({ key: key, kind: kind, title: title, meta: meta, sub: sub, live: !!live, job: jobId || '' });
+      if (live) { out.active = true; }
+    }
+    function liveOf(key) {
+      for (var k = 0; k < out.nodes.length; k++) { if (out.nodes[k].key === key) { return out.nodes[k].live; } }
+      return false;
+    }
+
+    out.kind = wf ? 'workflow' : 'job';
+    node('in', 'in',
+      wf ? 'MCP 任务输入 · dsh_delegate' : 'MCP 任务输入 · dsh_start',
+      clipText(job.task_preview, 90) || '服务端未提供任务摘要',
+      shortId(job.job_id), false, job.job_id);
+    node('dsh', 'hub',
+      wf ? ('DSH 调度 · ' + (job.phase || '阶段未记录')) : ('DSH 调度 · ' + roleTxt),
+      (wf ? 'dsh_delegate' : 'dsh_start') + ' · ' + shortId(job.job_id),
+      si.text + (job.snapshot && !si.active ? ' · 快照' : ''), si.active, job.job_id);
+    edgeDefs.push(['in-dsh', 'in', 'dsh']);
+
+    if (wf && kids.length) {
+      var shown = kids.slice(0, LV_MAX_CHILDREN);
+      for (c = 0; c < shown.length; c++) {
+        var ch = shown[c] || {};
+        var key = 'c-' + String(ch.task_id == null ? ('n' + c) : ch.task_id);
+        node(key, 'child',
+          String(ch.task_id == null ? '(无 task_id)' : ch.task_id),
+          ch.job_id ? ('job ' + shortId(ch.job_id)) : '无 job_id · 尚未启动',
+          childStatusText(ch.status) + (ch.summary ? (' · ' + clipText(ch.summary, 60)) : ''),
+          si.active && statusInfo(ch.status).active && !/^(queued|pending|starting)$/i.test(ch.status),
+          ch.job_id ? String(ch.job_id) : '');
+        edgeDefs.push(['dsh-' + c, 'dsh', key]);
+        edgeDefs.push([key + '-back', key, 'back']);
+      }
+      var dropped = kids.length - shown.length;
+      out.note = 'workflow_result 记录了 ' + kids.length + ' 个子任务' +
+        (dropped > 0 ? ('，主图展开 ' + shown.length + ' 个，其余 ' + dropped + ' 个见下方详情') : '') +
+        (wf.controller_alive === false ? ' · 本面板未持有控制器，状态来自共享快照' : '');
+    } else if (wf) {
+      /* Planning and judging report a real phase and nothing else yet. */
+      out.note = '当前真实阶段 ' + (job.phase || '未记录') +
+        '：workflow_result 还没有子任务记录，主图只显示这一阶段，不补任何 worker。';
+    } else {
+      node('exec', 'exec', 'DSH 执行节点', roleTxt, si.text, si.active && !/^(queued|pending|starting)$/i.test(job.status), job.job_id);
+      edgeDefs.push(['dsh-exec', 'dsh', 'exec']);
+      edgeDefs.push(['exec-back', 'exec', 'back']);
+      out.note = job.snapshot
+        ? '外部 DSH 任务：状态来自共享状态目录的快照，本进程不持有它的进程句柄。'
+        : '本面板提交的真实任务。';
+    }
+    if (wf && wf.children_omitted) {
+      out.note += ' · 服务端另有 ' + wf.children_omitted + ' 个子任务未随本次读取返回。';
+    }
+    node('back', 'back', '返回 · 待验收', 'DSH 结果回传本界面', si.active ? '尚未返回' : si.text, false, job.job_id);
+
+    for (i = 0; i < edgeDefs.length; i++) {
+      /* A wire flows only while the node it runs into is genuinely active, so a
+         finished sibling, a returned run or an unknown status stops it. */
+      out.edges.push({ id: edgeDefs[i][0], from: edgeDefs[i][1], to: edgeDefs[i][2], live: liveOf(edgeDefs[i][2]) });
+    }
+    return out;
+  }
+
+  /* The diagram follows the same pick the header button uses: an active external
+     run first, then the latest external record; with no external task at all it
+     may follow a real task of this panel, and nothing is invented beyond that. */
+  function livePick() {
+    var chosen = findJob(state.graphId);
+    if (chosen) { return chosen; }
+    var workflow = state.jobs.find(function (job) { return job.kind === 'workflow' && statusLabel(job).active; });
+    if (workflow) { return workflow; }
+    for (var i = 0; i < state.jobs.length; i++) {
+      var job = state.jobs[i];
+      if (statusLabel(job).active) { return job; }
+    }
+    return state.jobs[0] || null;
+  }
+
+  var lvDetailBusy = false;
+
+  /**
+   * Once per poll round, the run the main diagram follows is read again with
+   * dsh_get: the job listing never carries a workflow's children, so without this
+   * the child nodes would freeze at their first known status. At most one request
+   * per round, and never from renderAll, so ensureDetail -> renderAll cannot start
+   * another one.
+   */
+  function refreshLiveDetail() {
+    if (lvDetailBusy) { return Promise.resolve(null); }
+    var job = livePick();
+    if (!job || !job.job_id) { return Promise.resolve(null); }
+    var runningWorkflow = (job.kind === 'workflow' && statusLabel(job).active);
+    lvDetailBusy = true;
+    return ensureDetail(job, runningWorkflow).then(function (got) {
+      lvDetailBusy = false;
+      return got;
+    }, function () {
+      lvDetailBusy = false;
+      return null;
+    });
+  }
+
+  /* ================= state ================= */
+
+  var state = {
+    info: { backend: null, profile: null, model: null, workspaceRoot: null, defaultCwd: null },
+    role: null,
+    gate: 'before_plan',
+    /* The stage shows the real execution graph; the proposed role architecture is
+       the other view of the same stage. */
+    view: 'live',
+    jobs: [],
+    selectedId: null,
+    sourceId: null,
+    reqId: null,
+    retryPayload: null,
+    busy: false,
+    file: null,
+    cwdPref: null
+  };
+
+  /* ================= dom refs ================= */
+
+  var stage = document.getElementById('cad-stage');
+  var wires = document.getElementById('cad-wires');
+  var drawer = document.getElementById('cad-drawer');
+  var stateEl = document.getElementById('cad-state');
+  var logEl = document.getElementById('cad-log');
+  var rtBackend = document.getElementById('rt-backend');
+  var rtModel = document.getElementById('rt-model');
+  var rtRole = document.getElementById('rt-role');
+  var rtConn = document.getElementById('rt-conn');
+  var rtRoot = document.getElementById('rt-root');
+  var form = document.getElementById('cad-form');
+  var fRole = document.getElementById('f-role');
+  var fGate = document.getElementById('f-gate');
+  var fTask = document.getElementById('f-task');
+  var fCwd = document.getElementById('f-cwd');
+  var fSrc = document.getElementById('f-src');
+  var fSend = document.getElementById('f-send');
+  var fCancel = document.getElementById('f-cancel');
+  var fRetry = document.getElementById('f-retry');
+  var fMsg = document.getElementById('f-msg');
+  var fReqId = document.getElementById('f-reqid');
+  var jobsBox = document.getElementById('cad-jobs');
+  var jobsState = document.getElementById('jobs-state');
+  var resMeta = document.getElementById('res-meta');
+  var resBody = document.getElementById('res-body');
+  var liveNodes = root.querySelectorAll('[data-live]');
+  var roleButtons = root.querySelectorAll('[data-role]');
+  var liveView = document.getElementById('cad-live');
+  var liveWires = document.getElementById('lv-wires');
+  var lvFlow = document.getElementById('lv-flow');
+  var lvHead = document.getElementById('lv-head');
+  var lvNote = document.getElementById('lv-note');
+  var lvTag = document.getElementById('lv-tag');
+  var roleBoard = document.getElementById('cad-board');
+  var roleLegend = document.getElementById('cad-legend');
+  var viewToggle = document.getElementById('cad-view-toggle');
+  var viewNote = document.getElementById('cad-view-note');
+  var extNodeEl = document.getElementById('n-ext');
+
+  /* ================= helpers ================= */
+
+  function clear(el) { while (el && el.firstChild) { el.removeChild(el.firstChild); } }
+  function text(s) { var n = document.createElement('span'); n.textContent = s == null ? '' : String(s); return n; }
+
+  function newId() {
+    try {
+      if (window.crypto && typeof window.crypto.randomUUID === 'function') { return window.crypto.randomUUID(); }
+    } catch (e) { /* fall through */ }
+    try {
+      if (window.crypto && window.crypto.getRandomValues) {
+        var b = new Uint8Array(16), i, h = [];
+        window.crypto.getRandomValues(b);
+        b[6] = (b[6] & 0x0f) | 0x40;
+        b[8] = (b[8] & 0x3f) | 0x80;
+        for (i = 0; i < 16; i++) { h.push((b[i] + 0x100).toString(16).slice(1)); }
+        return h.slice(0, 4).join('') + '-' + h.slice(4, 6).join('') + '-' + h.slice(6, 8).join('') + '-' +
+               h.slice(8, 10).join('') + '-' + h.slice(10, 16).join('');
+      }
+    } catch (e2) { /* fall through */ }
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (ch) {
+      var r = (Math.random() * 16) | 0;
+      return (ch === 'x' ? r : ((r & 0x3) | 0x8)).toString(16);
+    });
+  }
+
+  function toMs(v) {
+    if (v == null) { return null; }
+    if (typeof v === 'number' && isFinite(v)) { return v > 1e12 ? v : v * 1000; }
+    var s = String(v).trim();
+    if (/^-?\d+(\.\d+)?$/.test(s)) { var n = Number(s); return n > 1e12 ? n : n * 1000; }
+    var t = Date.parse(s);
+    return isNaN(t) ? null : t;
+  }
+
+  function clockOf(v) {
+    var ms = toMs(v);
+    if (ms == null) { return v == null ? '—' : String(v); }
+    var d = new Date(ms);
+    function p(x) { return (x < 10 ? '0' : '') + x; }
+    return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+  }
+
+  function elapsedOf(job) {
+    var start = toMs(job.created_at);
+    if (start == null) { return ''; }
+    var end = toMs(job.ended_at);
+    if (end == null && !statusInfo(job.status).active) { return '—'; }
+    var s = Math.max(0, Math.round(((end == null ? Date.now() : end) - start) / 1000));
+    var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), q = s % 60;
+    function p(x) { return (x < 10 ? '0' : '') + x; }
+    return (h > 0 ? h + ':' : '') + p(m) + ':' + p(q);
+  }
+
+  function shortId(v) {
+    var s = String(v == null ? '' : v);
+    return s.length > 12 ? s.slice(0, 12) + '…' : s;
+  }
+
+  function normJob(j) {
+    if (!j || typeof j !== 'object') { return null; }
+    return {
+      job_id: j.job_id == null ? '' : String(j.job_id),
+      role: j.role == null ? '' : String(j.role),
+      gate: (j.gate == null || j.gate === '') ? null : String(j.gate),
+      sourceJobId: j.sourceJobId == null ? null : String(j.sourceJobId),
+      source: j.source == null ? '' : String(j.source),
+      task_preview: j.task_preview == null ? null : String(j.task_preview),
+      owned: j.owned !== false,
+      kind: j.kind == null ? 'job' : String(j.kind),
+      snapshot: j.snapshot === true,
+      state_unconfirmed: j.state_unconfirmed === true,
+      detail_loaded: j.detail_loaded !== false,
+      phase: j.phase == null ? null : String(j.phase),
+      workflow_result: j.workflow_result && typeof j.workflow_result === 'object' ? j.workflow_result : null,
+      note: j.note == null ? null : String(j.note),
+      cwd: j.cwd == null ? '' : String(j.cwd),
+      created_at: j.created_at == null ? null : String(j.created_at),
+      ended_at: j.ended_at == null ? null : String(j.ended_at),
+      cancel_supported: j.cancel_supported !== false,
+      answer_truncated: j.answer_truncated === true,
+      diagnostics: Array.isArray(j.diagnostics) ? j.diagnostics.map(String) : [],
+      status: j.status == null ? '' : String(j.status),
+      answer: j.answer == null ? null : String(j.answer),
+      error: j.error == null ? null : String(j.error),
+      exit_code: j.exit_code == null ? null : j.exit_code
+    };
+  }
+
+  /* Merge a freshly read job over the row already on screen. */
+  function mergeJob(fresh) {
+    var known = findJob(fresh.job_id);
+    if (!known) { state.jobs = sortJobs(state.jobs.concat([fresh])); return fresh; }
+    for (var k in fresh) {
+      if ((k === 'cwd' || k === 'created_at') && !fresh[k]) { continue; }
+      if (Object.prototype.hasOwnProperty.call(fresh, k) && fresh[k] !== null && fresh[k] !== undefined) {
+        known[k] = fresh[k];
+      }
+    }
+    return known;
+  }
+
+  /* An external row from dsh_list carries no answer; read the real one.
+     force is used only by the once-per-poll refresh of the run the main diagram
+     follows: a running workflow's children change while the listing does not. */
+  function ensureDetail(job, force) {
+    if (!job || !job.job_id) { return Promise.resolve(job); }
+    if (!force && job.detail_loaded !== false) { return Promise.resolve(job); }
+    return request(API_JOBS + '/' + encodeURIComponent(job.job_id),
+      { method: 'GET', headers: { 'Accept': 'application/json' }, cache: 'no-store' })
+      .then(function (d) {
+        var fresh = normJob(d && d.job);
+        if (fresh) { mergeJob(fresh); renderAll(); }
+        return fresh || job;
+      })
+      .catch(function (e) {
+        log('读取外部任务详情失败 · ' + e.message, 'err');
+        return job;
+      });
+  }
+
+  function sortJobs(list) {
+    return list.slice().sort(function (a, b) {
+      var ta = toMs(a.created_at), tb = toMs(b.created_at);
+      if (ta == null && tb == null) { return 0; }
+      if (ta == null) { return 1; }
+      if (tb == null) { return -1; }
+      return tb - ta;
+    });
+  }
+
+  function findJob(id) {
+    if (!id) { return null; }
+    for (var i = 0; i < state.jobs.length; i++) { if (state.jobs[i].job_id === id) { return state.jobs[i]; } }
+    return null;
+  }
+
+  function countActive() {
+    var n = 0;
+    for (var i = 0; i < state.jobs.length; i++) { if (statusInfo(state.jobs[i].status).active) { n++; } }
+    return n;
+  }
+
+  function anyActive() { return countActive() > 0; }
+
+  /* ================= UI persistence (selection only, no secrets) ================= */
+
+  function loadUI() {
+    try {
+      var raw = window.localStorage.getItem(LS_KEY);
+      if (!raw) { return; }
+      var v = JSON.parse(raw);
+      if (!v || typeof v !== 'object') { return; }
+      if (ROLES.indexOf(v.role) !== -1) { state.role = v.role; }
+      if (Object.prototype.hasOwnProperty.call(GATE_LABEL, v.gate)) { state.gate = v.gate; }
+      if (typeof v.cwd === 'string') { state.cwdPref = v.cwd; }
+      if (typeof v.file === 'string') { state.file = v.file; }
+      if (typeof v.job === 'string') { state.selectedId = v.job; }
+      if (typeof v.source === 'string') { state.sourceId = v.source; }
+    } catch (e) { /* corrupt or unavailable storage is ignored */ }
+  }
+
+  function saveUI() {
+    try {
+      window.localStorage.setItem(LS_KEY, JSON.stringify({
+        role: state.role,
+        gate: state.gate,
+        cwd: fCwd ? fCwd.value : '',
+        file: state.file,
+        job: state.selectedId,
+        source: state.sourceId
+      }));
+    } catch (e) { /* best effort only */ }
+  }
+
+  /* ================= networking ================= */
+
+  function setConn(t, bad) {
+    rtConn.textContent = t;
+    rtConn.className = 'v' + (bad ? ' bad' : '');
+  }
+
+  function request(path, opts) {
+    return fetch(path, opts).then(function (res) {
+      return res.text().then(function (txt) {
+        var data = null;
+        if (txt) { try { data = JSON.parse(txt); } catch (e) { data = null; } }
+        if (!res.ok) {
+          var e = new Error((data && data.error) ? String(data.error) : ('HTTP ' + res.status + ' ' + (res.statusText || '')));
+          e.definite = res.status < 500;
+          e.status = res.status;
+          throw e;
+        }
+        if (!data || typeof data !== 'object') {
+          var e2 = new Error('响应不是 JSON · 服务端结果未知');
+          e2.definite = false;
+          throw e2;
+        }
+        return data;
+      });
+    }, function () {
+      var e3 = new Error('网络失败 · 未收到服务端确认，结果未知');
+      e3.definite = false;
+      e3.network = true;
+      throw e3;
+    });
+  }
+
+  function loadInfo() {
+    return request(API_INFO, { method: 'GET', headers: { 'Accept': 'application/json' }, cache: 'no-store' })
+      .then(function (d) {
+        state.info = {
+          backend: d.backend == null ? null : String(d.backend),
+          profile: d.profile == null ? null : String(d.profile),
+          model: (typeof d.model === 'string' && d.model) ? d.model : null,
+          transport: d.transport == null ? null : String(d.transport),
+          bridgeStateRoot: d.bridgeStateRoot == null ? null : String(d.bridgeStateRoot),
+          workspaceRoot: d.workspaceRoot == null ? null : String(d.workspaceRoot),
+          defaultCwd: d.defaultCwd == null ? null : String(d.defaultCwd)
+        };
+        rtBackend.textContent = (state.info.backend || '?') + ' / ' + (state.info.profile || '?');
+        rtModel.textContent = state.info.model ? state.info.model : 'DSH配置决定';
+        rtRoot.textContent = state.info.workspaceRoot || '—';
+        if (!fCwd.value) { fCwd.value = state.info.defaultCwd || state.info.workspaceRoot || ''; }
+        setConn('已连接', false);
+        stateEl.textContent = '后端 ' + (state.info.backend || '?') + ' · ' + (state.info.profile || '?') +
+          ' · 底层模型 ' + (state.info.model || 'DSH配置决定') + ' · 传输 ' + (state.info.transport || 'MCP stdio') +
+          ' · 共享状态 ' + (state.info.bridgeStateRoot || '—') +
+          ' · 工作区 ' + (state.info.workspaceRoot || '—');
+      })
+      .catch(function (e) {
+        setConn('连接失败 · ' + e.message, true);
+        stateEl.textContent = '无法连接后端 · ' + e.message;
+        log('连接失败 · ' + e.message, 'err');
+      });
+  }
+
+  function loadJobs(quiet) {
+    return request(API_JOBS, { method: 'GET', headers: { 'Accept': 'application/json' }, cache: 'no-store' })
+      .then(function (d) {
+        var arr = (d && Array.isArray(d.jobs)) ? d.jobs : [];
+        var out = [];
+        for (var i = 0; i < arr.length; i++) {
+          var n = normJob(arr[i]);
+          if (n) { out.push(n); }
+        }
+        state.jobs = sortJobs(out);
+        var selected = findJob(state.selectedId);
+        if (!state.sourceId && selected && selected.sourceJobId) { state.sourceId = selected.sourceJobId; }
+        if (state.selectedId && !findJob(state.selectedId)) { state.selectedId = null; }
+        renderAll();
+        var own = 0, ext = 0;
+        for (var c = 0; c < state.jobs.length; c++) { if (isExternal(state.jobs[c])) { ext++; } else { own++; } }
+        if (!quiet) {
+          log('已同步 ' + state.jobs.length + ' 条服务端任务（本界面 ' + own + ' · 外部 MCP ' + ext + '）', 'act');
+        }
+        if (d && d.external_error) {
+          setConn('外部任务读取失败 · ' + String(d.external_error), true);
+          if (!quiet) { log('外部 MCP 任务读取失败 · ' + String(d.external_error), 'err'); }
+        } else {
+          setConn('已连接', false);
+        }
+        var graphJob = livePick();
+        if (!graphJob || graphJob.job_id !== state.selectedId) { ensureDetail(findJob(state.selectedId)); }
+        refreshLiveDetail();
+      })
+      .catch(function (e) {
+        setConn('同步失败 · ' + e.message, true);
+        if (!quiet) { log('GET /api/jobs 失败 · ' + e.message, 'err'); }
+      });
+  }
+
+  /* ================= log ================= */
+
+  function log(m, cls) {
+    if (logEl.childNodes.length === 1 && logEl.firstChild.className === 'cad-logline') { clear(logEl); }
+    var row = document.createElement('div');
+    row.className = 'cad-logline' + (cls ? ' ' + cls : '');
+    var t = document.createElement('span');
+    t.className = 'cad-t';
+    t.textContent = clockOf(Date.now());
+    var msg = document.createElement('span');
+    msg.className = 'cad-m';
+    msg.textContent = m;
+    row.appendChild(t);
+    row.appendChild(msg);
+    logEl.appendChild(row);
+    while (logEl.childNodes.length > 40) { logEl.removeChild(logEl.firstChild); }
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  /* ================= rendering ================= */
+
+  function renderRuntime() {
+    rtRole.textContent = state.role ? (ROLE_LABEL[state.role] || state.role) : '未选择';
+  }
+
+  /* ================= live view rendering ================= */
+
+  var lvNodes = {};        /* node key -> { el, t, m, d, job } */
+  var lvSlots = [];        /* four fixed containers: in · dsh · children row · back */
+  var lvGraph = { nodes: [], edges: [] };
+  var lvPaths = {};        /* edge id -> svg path */
+  var lvSig = '';
+  var lvEdgeSig = '';
+
+  function lvSlotContainers() {
+    if (lvSlots.length === 4) { return lvSlots; }
+    clear(lvFlow);
+    lvSlots = [];
+    for (var i = 0; i < 4; i++) {
+      var wrap = document.createElement('div');
+      wrap.className = (i === 2) ? 'lv-row' : 'lv-slot';
+      lvFlow.appendChild(wrap);
+      lvSlots.push(wrap);
+    }
+    return lvSlots;
+  }
+
+  function lvNodeEl(n) {
+    var el = document.createElement('button');
+    el.type = 'button';
+    el.className = 'cad-node lv-node lv-' + n.kind;
+    el.setAttribute('data-lv', n.key);
+    var t = document.createElement('span');
+    t.className = 'cad-node-t';
+    var m = document.createElement('span');
+    m.className = 'cad-node-m';
+    var d = document.createElement('span');
+    d.className = 'cad-node-d';
+    el.appendChild(t);
+    el.appendChild(m);
+    el.appendChild(d);
+    lvNodes[n.key] = { el: el, t: t, m: m, d: d, job: n.job || '' };
+    return el;
+  }
+
+  /**
+   * Updates the main diagram in place.
+   *
+   * Elements are created only when the real structure changes: a 1s clock tick or
+   * an 8s poll that reports the same run updates text and classes on the nodes
+   * that are already there, so a dash or a breathing node is never restarted by a
+   * redraw. Wires are keyed the same way.
+   */
+  function renderLiveGraph() {
+    if (!lvFlow) { return; }
+    var job = livePick();
+    lvGraph = liveGraph(job);
+    var slots = lvSlotContainers();
+    var i, keys = [];
+    for (i = 0; i < lvGraph.nodes.length; i++) { keys.push(lvGraph.nodes[i].key); }
+    var sig = keys.join('|');
+    if (sig !== lvSig) {
+      for (var gone in lvNodes) {
+        if (Object.prototype.hasOwnProperty.call(lvNodes, gone) && keys.indexOf(gone) === -1) {
+          var old = lvNodes[gone].el;
+          if (old.parentNode) { old.parentNode.removeChild(old); }
+          delete lvNodes[gone];
+        }
+      }
+      for (i = 0; i < lvGraph.nodes.length; i++) {
+        var n = lvGraph.nodes[i];
+        var slot = (n.kind === 'child' || n.kind === 'exec') ? 2 : (n.key === 'in' ? 0 : (n.key === 'dsh' ? 1 : 3));
+        if (!lvNodes[n.key]) { lvNodeEl(n).setAttribute('data-slot', String(slot)); }
+        slots[slot].appendChild(lvNodes[n.key].el);
+      }
+      lvSig = sig;
+    }
+
+    for (i = 0; i < lvGraph.nodes.length; i++) {
+      var node = lvGraph.nodes[i];
+      var held = lvNodes[node.key];
+      if (!held) { continue; }
+      held.t.textContent = node.title;
+      held.m.textContent = node.meta;
+      held.d.textContent = node.sub;
+      held.job = node.job || '';
+      /* The node only breathes while its own real status is active. */
+      if (held.el.classList) { held.el.classList.toggle('is-live', node.live); }
+    }
+
+    var si = job ? statusLabel(job) : null;
+    if (lvTag) { lvTag.textContent = lvGraph.kind === 'workflow' ? '真实执行 · workflow' : (lvGraph.kind === 'job' ? '真实执行 · 单任务' : '真实执行'); }
+    if (lvHead) {
+      lvHead.textContent = job
+        ? (shortId(job.job_id) + ' · ' + si.text + (job.snapshot && !si.active ? ' · 快照' : '') +
+           (isExternal(job) ? (' · ' + EXTERNAL_LABEL) : (' · ' + roleLabel(job))) +
+           (lvGraph.active ? ' · 执行中' : ' · 已停止'))
+        : '没有可跟随的真实任务';
+    }
+    if (lvNote) { lvNote.textContent = lvGraph.note; }
+  }
+
+  function lvBox(key) {
+    var held = lvNodes[key];
+    return held ? boxRect(held.el) : null;
+  }
+
+  function drawLive() {
+    if (!liveWires || !liveView || liveView.hidden) { return; }
+    var i, ids = [];
+    for (i = 0; i < lvGraph.edges.length; i++) { ids.push(lvGraph.edges[i].id); }
+    var sig = ids.join('|');
+    if (sig !== lvEdgeSig) {
+      while (liveWires.firstChild) { liveWires.removeChild(liveWires.firstChild); }
+      lvPaths = {};
+      for (i = 0; i < lvGraph.edges.length; i++) {
+        var p = mkTag('path', { 'class': 'cad-w', 'data-edge': lvGraph.edges[i].id });
+        liveWires.appendChild(p);
+        lvPaths[lvGraph.edges[i].id] = p;
+      }
+      lvEdgeSig = sig;
+    }
+    for (i = 0; i < lvGraph.edges.length; i++) {
+      var e = lvGraph.edges[i];
+      var path = lvPaths[e.id];
+      if (!path) { continue; }
+      path.setAttribute('class', 'cad-w' + (e.live ? ' is-flow' : ''));
+      layoutEdge({ a: e.from, b: e.to, aSide: 'bottom', bSide: 'top' }, path, lvBox);
+    }
+  }
+
+  /* The proposed role architecture stays exactly as it was, one native toggle away,
+     and is labelled as proposed so it is never read as the real run. */
+  function applyViewMode() {
+    var live = state.view !== 'roles';
+    if (roleBoard) { roleBoard.hidden = live; }
+    if (roleLegend) { roleLegend.hidden = live; }
+    if (wires) { wires.hidden = live; }
+    if (extNodeEl) { extNodeEl.hidden = live; }
+    if (liveView) { liveView.hidden = !live; }
+    if (liveWires) { liveWires.hidden = !live; }
+    if (viewToggle) {
+      viewToggle.setAttribute('aria-pressed', live ? 'false' : 'true');
+      viewToggle.textContent = live ? '查看拟议角色架构 · 手动调用' : '返回真实执行主图';
+    }
+    if (viewNote) {
+      viewNote.textContent = live
+        ? '主图为真实执行视图 · 只画服务端返回的执行事实，外部任务角色未知'
+        : '角色架构 / 手动调用图 · 原模型配置草案尚未应用';
+    }
+    window.requestAnimationFrame(draw);
+  }
+
+  function renderSelection() {
+    var btns = root.querySelectorAll('[data-role]');
+    for (var i = 0; i < btns.length; i++) {
+      var role = btns[i].getAttribute('data-role');
+      var gate = btns[i].getAttribute('data-gate');
+      var on;
+      if (gate) { on = (state.role === 'architect' && state.gate === gate); }
+      else if (role === 'main') { on = (state.role === 'main' && btns[i].id === 'n-sol'); }
+      else { on = (state.role === role); }
+      btns[i].setAttribute('aria-pressed', on ? 'true' : 'false');
+    }
+  }
+
+  function renderLive() {
+    var byKey = {};
+    var i;
+    for (i = 0; i < liveNodes.length; i++) { byKey[liveNodes[i].getAttribute('data-live')] = liveNodes[i]; }
+    for (var k in byKey) {
+      if (Object.prototype.hasOwnProperty.call(byKey, k)) { byKey[k].textContent = ''; }
+    }
+
+    for (i = 0; i < state.jobs.length; i++) {
+      var job = state.jobs[i];
+      /* A task with no role in this console never lights a role node: there is
+         no honest role to highlight, and guessing one would be a fiction. */
+      if (isExternal(job) || ROLES.indexOf(job.role) === -1) { continue; }
+      var si = statusLabel(job);
+      if (!si.active) { continue; }
+      var keys = [job.role];
+      if (job.role === 'architect' && job.gate) { keys.push('architect:' + job.gate); }
+      if (job.role === 'main') { keys.push('main:back'); }
+      for (var m = 0; m < keys.length; m++) {
+        var el = byKey[keys[m]];
+        if (!el) { continue; }
+        el.textContent = (keys[m] === 'main:back' ? '回主节点 · ' : '') + si.text + ' · ' + shortId(job.job_id);
+      }
+    }
+
+    /* Node highlight follows real active jobs only — never a scripted sequence. */
+    var btns = root.querySelectorAll('[data-role]');
+    for (i = 0; i < btns.length; i++) {
+      var role = btns[i].getAttribute('data-role');
+      var gate = btns[i].getAttribute('data-gate');
+      var on = false;
+      for (var q = 0; q < state.jobs.length; q++) {
+        var jj = state.jobs[q];
+        if (isExternal(jj) || ROLES.indexOf(jj.role) === -1) { continue; }
+        if (!statusLabel(jj).active) { continue; }
+        if (jj.role !== role) { continue; }
+        if (gate && jj.gate !== gate) { continue; }
+        on = true;
+        break;
+      }
+      btns[i].classList.toggle('is-on', on);
+    }
+
+    /* Header button and the external node read the same pick: an active external
+       run outranks the latest finished record, so both always name what is live. */
+    var ext = externalPick(state.jobs);
+    var extJob = ext.job;
+    var extActive = ext.active;
+    var mcpActivity = document.getElementById('cad-mcp-live');
+    mcpActivity.disabled = !extJob;
+    mcpActivity.dataset.jobId = extJob ? extJob.job_id : '';
+    mcpActivity.textContent = extJob
+      ? ('MCP 调用 · ' + (extActive ? ('运行中 ' + extActive + ' 个 · ') : '') + statusLabel(extJob).text + ' · ' + shortId(extJob.job_id) + ' · 查看结果')
+      : 'MCP 调用 · 暂无记录';
+
+    var extNode = document.getElementById('n-ext');
+    var extLive = document.getElementById('n-ext-live');
+    var extCount = document.getElementById('n-ext-count');
+    var extBits = [];
+    if (extJob) {
+      extBits.push((extJob.phase ? extJob.phase + ' · ' : '') + statusLabel(extJob).text + ' · ' + shortId(extJob.job_id));
+      if (extJob.snapshot && !statusLabel(extJob).active) { extBits.push('快照'); }
+    } else {
+      extBits.push('暂无外部 MCP 任务记录');
+    }
+    extLive.textContent = extBits.join(' · ');
+    extCount.textContent = extActive
+      ? ('外部运行中 ' + extActive + ' 个' + (extActive > 1 ? ' · 显示其中一个' : ''))
+      : (extJob ? '外部无运行中任务 · 显示最新记录' : '运行中 0 个 · 无外部任务');
+    extNode.dataset.jobId = extJob ? extJob.job_id : '';
+    extNode.disabled = !extJob;
+    /* is-on reuses the role-node highlight; is-busy adds the breathing hint and is
+       removed the moment the run reaches a terminal state. */
+    extNode.classList.toggle('is-on', extActive > 0);
+    extNode.classList.toggle('is-busy', extActive > 0);
+    jobsState.textContent = state.jobs.length
+      ? (anyActive()
+          ? ('运行中 ' + countActive() + ' 个（外部快照 ' + extActive + '）· 每 ' + Math.round(POLL_MS / 1000) + 's 同步')
+          : ('最近 ' + state.jobs.length + ' 条（含外部 MCP）· 无本界面运行中任务 · 仍每 ' + Math.round(POLL_MS / 1000) + 's 同步'))
+      : ('暂无任务记录 · 每 ' + Math.round(POLL_MS / 1000) + 's 同步外部 MCP 任务');
+    /* The stage's default diagram is the real run; the role architecture only
+       follows this pick when it is the view the reader switched to. */
+    renderLiveGraph();
+  }
+
+  function renderJobs() {
+    clear(jobsBox);
+    if (!state.jobs.length) {
+      var e = document.createElement('span');
+      e.className = 'cad-empty';
+      e.textContent = '服务端暂无任务记录。选一个角色，填 task 后点「调用所选 agent」。';
+      jobsBox.appendChild(e);
+      return;
+    }
+    var limit = Math.min(state.jobs.length, 50);
+    for (var i = 0; i < limit; i++) {
+      (function (job) {
+        var si = statusLabel(job);
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'cad-job ' + si.cls + (job.job_id === state.selectedId ? ' is-sel' : '');
+
+        var l1 = document.createElement('span');
+        l1.className = 'cad-job-l1';
+        var r = document.createElement('span');
+        r.className = 'cad-jr';
+        r.textContent = roleLabel(job);
+        l1.appendChild(r);
+        if (job.kind === 'workflow') {
+          var wk = document.createElement('span');
+          wk.className = 'cad-jg';
+          wk.textContent = WORKFLOW_LABEL;
+          l1.appendChild(wk);
+        }
+        if (job.gate) {
+          var g = document.createElement('span');
+          g.className = 'cad-jg';
+          g.textContent = GATE_LABEL[job.gate] || job.gate;
+          l1.appendChild(g);
+        }
+        var s = document.createElement('span');
+        s.className = 'cad-js ' + si.cls;
+        s.textContent = si.text;
+        l1.appendChild(s);
+        var id = document.createElement('span');
+        id.className = 'cad-jid';
+        id.textContent = job.job_id || '(无 job_id)';
+        l1.appendChild(id);
+        b.appendChild(l1);
+
+        var l2 = document.createElement('span');
+        l2.className = 'cad-jl2';
+        var el = document.createElement('span');
+        el.setAttribute('data-elapsed', job.job_id || '');
+        el.textContent = '已用 ' + elapsedOf(job);
+        l2.appendChild(el);
+        var tm = document.createElement('span');
+        tm.textContent = clockOf(job.created_at);
+        l2.appendChild(tm);
+        if (job.cwd) {
+          var cw = document.createElement('span');
+          cw.textContent = job.cwd;
+          l2.appendChild(cw);
+        }
+        if (job.exit_code != null) {
+          var ec = document.createElement('span');
+          ec.textContent = 'exit ' + String(job.exit_code);
+          l2.appendChild(ec);
+        }
+        b.appendChild(l2);
+
+        b.addEventListener('click', function () {
+          state.selectedId = (state.selectedId === job.job_id) ? null : job.job_id;
+          state.graphId = state.selectedId;
+          renderJobs(); renderResult(); renderForm(); renderLive();
+          saveUI();
+          /* An external row arrives from the listing without its answer; the
+             detail read is what fills it in, from dsh_get. */
+          ensureDetail(findJob(state.selectedId));
+        });
+        jobsBox.appendChild(b);
+      })(state.jobs[i]);
+    }
+  }
+
+  function renderElapsed() {
+    var nodes = jobsBox.querySelectorAll('[data-elapsed]');
+    for (var i = 0; i < nodes.length; i++) {
+      var job = findJob(nodes[i].getAttribute('data-elapsed'));
+      if (job) { nodes[i].textContent = '已用 ' + elapsedOf(job); }
+    }
+    var box = resMeta.querySelector('[data-elapsed]');
+    if (box) {
+      var sel = findJob(state.selectedId);
+      if (sel) { box.textContent = elapsedOf(sel); }
+    }
+  }
+
+  function metaRow(label, value) {
+    var wrap = document.createElement('span');
+    var b = document.createElement('b');
+    b.textContent = label;
+    wrap.appendChild(b);
+    var v = document.createElement('span');
+    v.className = 'v';
+    v.textContent = (value == null || value === '') ? '—' : String(value);
+    wrap.appendChild(v);
+    return wrap;
+  }
+
+  function renderResult() {
+    clear(resMeta);
+    var job = findJob(state.selectedId);
+    if (!job) {
+      resBody.className = 'cad-body muted';
+      resBody.textContent = '尚未选中任务。点击下方任务列表中的任意一条查看真实返回。';
+      return;
+    }
+    var si = statusLabel(job);
+    var external = isExternal(job);
+
+    resMeta.appendChild(metaRow('job_id', job.job_id || '—'));
+    resMeta.appendChild(metaRow('role', roleLabel(job)));
+    resMeta.appendChild(metaRow('来源', job.source || (external ? EXTERNAL_LABEL : '本界面')));
+    if (job.task_preview) { resMeta.appendChild(metaRow('任务', job.task_preview)); }
+    if (external) {
+      resMeta.appendChild(metaRow('类型', job.kind === 'workflow' ? 'MCP workflow（dsh_delegate）' : 'MCP 任务（dsh_start）'));
+      resMeta.appendChild(metaRow('本进程控制', '无进程句柄 · 不可取消'));
+      resMeta.appendChild(metaRow('状态来源', job.snapshot ? '快照（dsh_get 读到的记录）' : '未知'));
+    }
+    if (!external) resMeta.appendChild(metaRow('gate', job.gate ? (GATE_LABEL[job.gate] || job.gate) : '—'));
+    if (job.sourceJobId) { resMeta.appendChild(metaRow('审查来源', job.sourceJobId)); }
+    resMeta.appendChild(metaRow('status', (job.status || '—') + ' → ' + si.text));
+    if (job.phase) { resMeta.appendChild(metaRow('phase', job.phase)); }
+    resMeta.appendChild(metaRow('exit_code', job.exit_code == null ? '' : String(job.exit_code)));
+    resMeta.appendChild(metaRow('created_at', job.created_at ? (clockOf(job.created_at) + ' · ' + job.created_at) : '—'));
+    resMeta.appendChild(metaRow('cwd', job.cwd || '—'));
+
+    var elapsed = document.createElement('span');
+    var elb = document.createElement('b');
+    elb.textContent = '已用';
+    elapsed.appendChild(elb);
+    var elv = document.createElement('span');
+    elv.className = 'v';
+    elv.setAttribute('data-elapsed', job.job_id || '');
+    elv.textContent = elapsedOf(job);
+    elapsed.appendChild(elv);
+    resMeta.appendChild(elapsed);
+
+    var parts = [];
+    if (job.note) { parts.push(job.note); }
+    if (job.answer_truncated) { parts.push('返回内容已截断；验收前需查看完整输出。'); }
+    if (job.error != null && job.error !== '') { parts.push(job.error); }
+    if (job.diagnostics.length) { parts.push('执行诊断：\n' + job.diagnostics.join('\n')); }
+    if (job.answer != null && job.answer !== '') { parts.push(job.answer); }
+    if (job.workflow_result) { parts.push(JSON.stringify(job.workflow_result, null, 2)); }
+    if (!parts.length) {
+      resBody.className = 'cad-body muted';
+      resBody.textContent = si.active
+        ? (external
+            ? '快照显示该任务仍在运行，尚无返回内容；本进程不持有它的进程句柄，无法确认或取消。'
+            : '任务仍在服务端运行，尚无返回内容。这里不会显示任何推测或编造的结果。')
+        : '该任务没有返回正文，也没有 error 字段。';
+      return;
+    }
+    resBody.className = 'cad-body' + ((job.error != null && job.error !== '') ? ' err' : '');
+    resBody.textContent = parts.join('\n\n');
+  }
+
+  function renderSource() {
+    clear(fSrc);
+    if (state.role !== 'architect') {
+      fSrc.appendChild(text('选择 architect 后，可以把下方任务的真实结果作为审查来源。'));
+      return;
+    }
+    var label = document.createElement('label');
+    label.htmlFor = 'f-source-job';
+    label.textContent = '审查来源';
+    var select = document.createElement('select');
+    select.id = 'f-source-job';
+    select.className = 'cad-sel';
+    var none = document.createElement('option');
+    none.value = '';
+    none.textContent = '无 · 使用任务中提供的材料';
+    select.appendChild(none);
+    for (var i = 0; i < state.jobs.length; i++) {
+      var job = state.jobs[i];
+      /* Review context must come from a job of this console: the server only
+         accepts a sourceJobId it owns, so an external task is never offered. */
+      if (isExternal(job)) { continue; }
+      var option = document.createElement('option');
+      option.value = job.job_id;
+      option.textContent = roleLabel(job) + ' · ' + shortId(job.job_id) + ' · ' + statusLabel(job).text;
+      select.appendChild(option);
+    }
+    select.value = state.sourceId || '';
+    select.addEventListener('change', function () {
+      state.sourceId = select.value || null;
+      var source = findJob(state.sourceId);
+      if (source) { fCwd.value = source.cwd; }
+      invalidateDraft();
+      saveUI();
+    });
+    fSrc.appendChild(label);
+    fSrc.appendChild(select);
+  }
+
+  function activeCancelTarget() {
+    var sel = findJob(state.selectedId);
+    if (sel && statusLabel(sel).active && sel.cancel_supported && !isExternal(sel)) { return sel; }
+    for (var i = 0; i < state.jobs.length; i++) {
+      var job = state.jobs[i];
+      if (isExternal(job)) { continue; }
+      if (statusLabel(job).active && job.cancel_supported) { return job; }
+    }
+    return null;
+  }
+
+  function renderForm() {
+    var isArch = state.role === 'architect';
+    fRole.textContent = state.role
+      ? ('已选 ' + (ROLE_LABEL[state.role] || state.role) + ' · 底层模型 ' +
+         (state.info.model || 'DSH配置决定') + '（角色 ≠ 模型）')
+      : '未选择 · 点击 main / worker / explorer / researcher / architect 节点';
+
+    fGate.disabled = !isArch;
+    fGate.value = Object.prototype.hasOwnProperty.call(GATE_LABEL, state.gate) ? state.gate : 'before_plan';
+
+    renderSource();
+
+    var active = activeCancelTarget();
+    var selectedExternal = isExternal(findJob(state.selectedId));
+    if (selectedExternal) {
+      fCancel.disabled = true;
+      fCancel.textContent = '外部 MCP 任务 · 本进程不可取消';
+    } else if (active) {
+      fCancel.disabled = false;
+      fCancel.textContent = '取消 ' + roleLabel(active) + ' ' + shortId(active.job_id);
+    } else {
+      fCancel.disabled = true;
+      fCancel.textContent = '取消当前任务';
+    }
+
+    fSend.disabled = state.busy;
+    fSend.textContent = state.busy ? '提交中…' : '调用所选 agent';
+    fReqId.textContent = state.reqId ? ('clientRequestId ' + shortId(state.reqId)) : 'clientRequestId 待生成';
+    fRetry.hidden = !state.retryPayload;
+  }
+
+  function renderAll() {
+    renderSelection();
+    renderRuntime();
+    renderLive();
+    renderJobs();
+    renderResult();
+    renderForm();
+    window.requestAnimationFrame(draw);
+  }
+
+  function msg(t, cls) {
+    fMsg.className = 'cad-msg' + (cls ? ' ' + cls : '');
+    fMsg.textContent = t || '';
+  }
+
+  /* ================= wires: geometry only, animation only where really active ================= */
+
+  var EDGES = [
+    { id: 'e-sol-jev',         a: 'n-sol',        b: 'n-jev',        aSide: 'bottom', bSide: 'top' },
+    { id: 'e-jev-bus',         a: 'n-jev',        b: 'n-bus',        aSide: 'bottom', bSide: 'top' },
+    { id: 'e-bus-worker',      a: 'n-bus',        b: 'n-worker',     aSide: 'bottom', bSide: 'top' },
+    { id: 'e-bus-explorer',    a: 'n-bus',        b: 'n-explorer',   aSide: 'bottom', bSide: 'top' },
+    { id: 'e-bus-researcher',  a: 'n-bus',        b: 'n-researcher', aSide: 'bottom', bSide: 'top' },
+    { id: 'e-worker-back',     a: 'n-worker',     b: 'n-back',       aSide: 'bottom', bSide: 'top' },
+    { id: 'e-explorer-back',   a: 'n-explorer',   b: 'n-back',       aSide: 'bottom', bSide: 'top' },
+    { id: 'e-researcher-back', a: 'n-researcher', b: 'n-back',       aSide: 'bottom', bSide: 'top' },
+    { id: 'e-jev-sol',  a: 'n-jev', b: 'n-sol',  fs: 'right', fb: 'right', bend: 14 },
+    { id: 'e-g1-sol',   a: 'g1',    b: 'n-sol',  aSide: 'right', bSide: 'left', bv: -9, bend: 6 },
+    { id: 'e-g2-sol',   a: 'g2',    b: 'n-sol',  aSide: 'right', bSide: 'left', bv: 9,  bend: 13 },
+    { id: 'e-g3-back',  a: 'g3',    b: 'n-back', aSide: 'right', bSide: 'left', bv: 0,  bend: 20 }
+  ];
+
+  var SVGNS = 'http://www.w3.org/2000/svg';
+  var wirePaths = {};
+
+  function mkTag(name, attrs) {
+    var el = document.createElementNS(SVGNS, name);
+    for (var k in attrs) { if (Object.prototype.hasOwnProperty.call(attrs, k)) { el.setAttribute(k, attrs[k]); } }
+    return el;
+  }
+
+  for (var ei = 0; ei < EDGES.length; ei++) {
+    var pathEl = mkTag('path', { 'class': 'cad-w', 'data-edge': EDGES[ei].id });
+    wires.appendChild(pathEl);
+    wirePaths[EDGES[ei].id] = pathEl;
+  }
+
+  function boxRect(el) {
+    if (!el || typeof el.getBoundingClientRect !== 'function') { return null; }
+    var r = el.getBoundingClientRect();
+    var s = stage.getBoundingClientRect();
+    return {
+      left: r.left - s.left,
+      top: r.top - s.top,
+      width: r.width,
+      height: r.height,
+      cx: r.left - s.left + r.width / 2,
+      cy: r.top - s.top + r.height / 2,
+      right: r.left - s.left + r.width,
+      bottom: r.top - s.top + r.height
+    };
+  }
+
+  function boxOf(id) { return boxRect(document.getElementById(id)); }
+
+  function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+  function resolveSide(A, B, pref) {
+    var dx = Math.abs(B.cx - A.cx);
+    var dy = Math.abs(B.cy - A.cy);
+    if (pref === 'right' || pref === 'left') {
+      if (dx >= 10 && dx >= dy * 0.45) { return pref; }
+      return B.cy > A.cy ? 'bottom' : 'top';
+    }
+    if (dy >= 8) { return pref; }
+    return B.cx > A.cx ? 'right' : 'left';
+  }
+
+  function anchor(B, side, off) {
+    if (side === 'left')  { return { x: B.left,  y: B.cy + (off || 0) }; }
+    if (side === 'right') { return { x: B.right, y: B.cy + (off || 0) }; }
+    if (side === 'top')   { return { x: B.cx + (off || 0), y: B.top }; }
+    return { x: B.cx + (off || 0), y: B.bottom };
+  }
+
+  /* One wire, laid out from the two boxes it joins. The same routine serves the
+     proposed architecture and the live execution graph; only the live graph is
+     ever asked to carry a moving dash, and only for a genuinely active edge. */
+  function layoutEdge(e, p, resolve) {
+    var A = resolve(e.a);
+    var B = resolve(e.b);
+    if (!A || !B || !p) { return; }
+    var sa = e.fs || resolveSide(A, B, e.aSide);
+    var horiz = (sa === 'left' || sa === 'right');
+    var sb = e.fb || (horiz ? (B.cx > A.cx ? 'left' : 'right') : (B.cy > A.cy ? 'top' : 'bottom'));
+    var p0 = anchor(A, sa, 0);
+    var p1 = anchor(B, sb, e.bv || 0);
+    var d;
+    if (horiz) {
+      var mx = (typeof e.bend === 'number') ? (p0.x + e.bend) : ((p0.x + p1.x) / 2);
+      mx = clamp(mx, 4, stage.clientWidth - 4);
+      d = 'M' + p0.x + ',' + p0.y + ' L' + mx + ',' + p0.y + ' L' + mx + ',' + p1.y + ' L' + p1.x + ',' + p1.y;
+    } else {
+      var my = (typeof e.bend === 'number') ? (p0.y + e.bend) : ((p0.y + p1.y) / 2);
+      d = 'M' + p0.x + ',' + p0.y + ' L' + p0.x + ',' + my + ' L' + p1.x + ',' + my + ' L' + p1.x + ',' + p1.y;
+    }
+    p.setAttribute('d', d);
+  }
+
+  function draw() {
+    if (!stage || !wires) { return; }
+    if (!wires.hidden) {
+      for (var i = 0; i < EDGES.length; i++) {
+        layoutEdge(EDGES[i], wirePaths[EDGES[i].id], boxOf);
+      }
+    }
+    drawLive();
+  }
+
+  function markNarrow() {
+    root.classList.toggle('is-narrow', root.clientWidth < 520);
+    draw();
+  }
+
+  /* ================= diff drawer (textContent only) ================= */
+
+  var FILES = {
+    'config-toml':     { path: '/Users/as1379898680/.codex/config.toml',           kind: '修改', a: '2',  d: '1' },
+    'explorer-toml':   { path: '/Users/as1379898680/.codex/agents/explorer.toml',   kind: '新增', a: '12', d: '0' },
+    'worker-toml':     { path: '/Users/as1379898680/.codex/agents/worker.toml',     kind: '新增', a: '11', d: '0' },
+    'researcher-toml': { path: '/Users/as1379898680/.codex/agents/researcher.toml', kind: '新增', a: '12', d: '0' },
+    'architect-toml':  { path: '/Users/as1379898680/.codex/agents/architect.toml',  kind: '新增', a: '14', d: '0' },
+    'agents-md':       { path: '/Volumes/Untitled/zido/AGENTS.md',                 kind: '修改', a: '7',  d: '0' }
+  };
+  var DEFAULT_FILE = 'config-toml';
+  var kindEl = document.getElementById('cad-kind');
+  var pathEl = document.getElementById('cad-path');
+  var statEl = root.querySelector('.cad-stat');
+  var fileBtns = root.querySelectorAll('.cad-filebtn');
+  var diffBlocks = root.querySelectorAll('.cad-d');
+
+  function selectFile(key) {
+    if (!FILES[key]) { key = DEFAULT_FILE; }
+    state.file = key;
+    var info = FILES[key];
+    var i;
+    for (i = 0; i < diffBlocks.length; i++) {
+      diffBlocks[i].hidden = diffBlocks[i].getAttribute('data-key') !== key;
+    }
+    for (i = 0; i < fileBtns.length; i++) {
+      var on = fileBtns[i].getAttribute('data-file') === key;
+      fileBtns[i].setAttribute('aria-pressed', on ? 'true' : 'false');
+      fileBtns[i].classList.toggle('is-sel', on);
+    }
+    kindEl.textContent = info.kind;
+    pathEl.textContent = info.path;
+    clear(statEl);
+    var a = document.createElement('span');
+    a.className = 'mk-a';
+    a.textContent = '+' + info.a;
+    var slash = document.createElement('span');
+    slash.textContent = ' / ';
+    var d = document.createElement('span');
+    d.className = 'mk-d';
+    d.textContent = '-' + info.d;
+    statEl.appendChild(a);
+    statEl.appendChild(slash);
+    statEl.appendChild(d);
+    saveUI();
+  }
+
+  /* ================= actions ================= */
+
+  function withinRoot(p, rootPath) {
+    if (!rootPath) { return true; }
+    var r = rootPath.replace(/\/+$/, '');
+    return p === r || p.indexOf(r + '/') === 0;
+  }
+
+  function invalidateDraft() {
+    state.reqId = null;
+    state.retryPayload = null;
+    fRetry.hidden = true;
+    renderForm();
+  }
+
+  function doSubmit() {
+    if (state.busy) { return; }
+    if (state.retryPayload) { return sendRetry(); }
+
+    if (!state.role) { msg('请先点击树上的角色节点选择调用角色。', 'bad'); return; }
+
+    var task = fTask.value.replace(/^\s+|\s+$/g, '');
+    if (!task) { msg('task 不能为空。', 'bad'); fTask.focus(); return; }
+    if (task.length > TASK_MAX) { msg('task 超过 ' + TASK_MAX + ' 字符。', 'bad'); return; }
+
+    var cwd = fCwd.value.replace(/^\s+|\s+$/g, '');
+    if (!cwd) { msg('cwd 不能为空。', 'bad'); fCwd.focus(); return; }
+    if (cwd.charAt(0) !== '/') { msg('cwd 必须是绝对路径。', 'bad'); fCwd.focus(); return; }
+    if (!withinRoot(cwd, state.info.workspaceRoot)) {
+      msg('cwd 必须位于 workspaceRoot 之内（' + (state.info.workspaceRoot || '未知') + '），后端同样会校验。', 'bad');
+      fCwd.focus();
+      return;
+    }
+
+    if (!state.reqId) { state.reqId = newId(); }
+    var payload = { role: state.role, task: task, cwd: cwd, clientRequestId: state.reqId };
+    if (state.role === 'architect') {
+      payload.gate = Object.prototype.hasOwnProperty.call(GATE_LABEL, fGate.value) ? fGate.value : 'before_plan';
+      var src = findJob(state.sourceId);
+      if (src && src.job_id) { payload.sourceJobId = src.job_id; }
+    }
+    send(payload);
+  }
+
+  function sendRetry() {
+    if (!state.retryPayload || state.busy) { return; }
+    send(state.retryPayload);
+  }
+
+  function send(payload) {
+    state.busy = true;
+    state.retryPayload = null;
+    fRetry.hidden = true;
+    msg('提交中 · ' + (ROLE_LABEL[payload.role] || payload.role) +
+        (payload.gate ? (' · ' + (GATE_LABEL[payload.gate] || payload.gate)) : '') + ' …', 'warn');
+    renderForm();
+
+    request(API_JOBS, { method: 'POST', headers: MUT_HEADERS, body: JSON.stringify(payload) })
+      .then(function (d) {
+        var job = normJob(d && d.job);
+        state.busy = false;
+        state.reqId = null;
+        state.retryPayload = null;
+        if (job && job.job_id) {
+          var known = findJob(job.job_id);
+          if (known) {
+            known.role = job.role || known.role;
+            known.gate = job.gate;
+            known.cwd = job.cwd || known.cwd;
+            known.status = job.status || known.status;
+            known.ended_at = job.ended_at;
+            known.cancel_supported = job.cancel_supported;
+            known.answer = job.answer;
+            known.error = job.error;
+            known.exit_code = job.exit_code;
+          } else {
+            state.jobs = sortJobs(state.jobs.concat([job]));
+          }
+          state.selectedId = job.job_id;
+          state.graphId = job.job_id;
+          log('已提交 ' + (ROLE_LABEL[job.role] || job.role) + ' · job_id ' + job.job_id +
+              (job.gate ? (' · ' + job.gate) : '') + ' · 状态 ' + (job.status || '—'), 'act');
+          msg('已提交 · job_id ' + job.job_id + ' · 状态 ' + (job.status || '—'), 'ok');
+        } else {
+          log('提交响应缺少 job 字段，正在重新同步服务端状态。', 'warn');
+          msg('提交响应缺少 job 字段，正在重新同步。', 'warn');
+        }
+        renderAll();
+        saveUI();
+        return loadJobs(true);
+      })
+      .catch(function (e) {
+        state.busy = false;
+        if (e.definite) {
+          /* Server gave a definite rejection: no job was created, start a fresh id. */
+          state.reqId = null;
+          state.retryPayload = null;
+          msg('提交被拒绝 · ' + e.message, 'bad');
+          log('提交失败 · ' + e.message, 'err');
+        } else {
+          /* Outcome unknown: keep the exact same clientRequestId for a manual retry. */
+          state.retryPayload = payload;
+          msg('提交结果尚未确认 · ' + e.message + '。点击重试会保留本次提交标识，避免重复创建任务。', 'warn');
+          log('提交结果未知 · ' + e.message + ' · 保留 clientRequestId ' + shortId(payload.clientRequestId), 'warn');
+        }
+        renderForm();
+      });
+  }
+
+  function cancelActive() {
+    var target = activeCancelTarget();
+    if (!target || state.busy) { return; }
+    state.busy = true;
+    fCancel.disabled = true;
+    msg('取消中 · ' + shortId(target.job_id) + ' …', 'warn');
+
+    request(API_JOBS + '/' + encodeURIComponent(target.job_id) + '/cancel', {
+      method: 'POST', headers: MUT_HEADERS, body: JSON.stringify({})
+    })
+      .then(function (d) {
+        state.busy = false;
+        var job = normJob(d && d.job);
+        if (job && job.job_id) {
+          var known = findJob(job.job_id);
+          if (known) {
+            known.status = job.status || known.status;
+            known.ended_at = job.ended_at;
+            known.cancel_supported = job.cancel_supported;
+            known.error = job.error;
+            known.exit_code = job.exit_code;
+            known.answer = job.answer;
+          } else {
+            state.jobs = sortJobs(state.jobs.concat([job]));
+          }
+          log('取消已受理 · ' + shortId(job.job_id) + ' · 状态 ' + (job.status || '—'), 'act');
+          msg('已发送取消 · job_id ' + job.job_id + ' · 当前状态 ' + (job.status || '—'), 'ok');
+        } else {
+          msg('取消响应缺少 job 字段，正在重新同步。', 'warn');
+        }
+        renderAll();
+        saveUI();
+        return loadJobs(true);
+      })
+      .catch(function (e) {
+        state.busy = false;
+        msg('取消失败 · ' + e.message, 'bad');
+        log('取消失败 · ' + e.message, 'err');
+        renderForm();
+      });
+  }
+
+  /* ================= polling ================= */
+
+  var pollTimer = null;
+
+  /**
+   * One unconditional poll, whether or not anything is running here.
+   *
+   * The point of this console is that a task started through some *other* MCP
+   * client appears on its own. That task is not in this console's own list at
+   * submit time, so an idle console is exactly the case that has to keep
+   * listening; a poller that slept while nothing was running would never notice
+   * one arriving.
+   */
+  function syncPoll() {
+    if (pollTimer) { return; }
+    pollTimer = window.setInterval(function () {
+      if (document.hidden) { return; }
+      loadJobs(true);
+    }, POLL_MS);
+  }
+
+  /* ================= events ================= */
+
+  for (var rb = 0; rb < roleButtons.length; rb++) {
+    roleButtons[rb].addEventListener('click', function (ev) {
+      var role = ev.currentTarget.getAttribute('data-role');
+      var gate = ev.currentTarget.getAttribute('data-gate');
+      if (role === 'architect' && state.role !== 'architect' && !state.sourceId) { state.sourceId = state.selectedId; }
+      state.role = role;
+      if (gate) { state.gate = gate; }
+      invalidateDraft();
+      renderSelection();
+      renderLive();
+      renderForm();
+      renderRuntime();
+      saveUI();
+      msg('已选 ' + (ROLE_LABEL[role] || role) + (gate ? (' · ' + (GATE_LABEL[gate] || gate)) : '') +
+          '，填写 task 后提交。', '');
+    });
+  }
+
+  for (var fb = 0; fb < fileBtns.length; fb++) {
+    fileBtns[fb].addEventListener('click', function (ev) { selectFile(ev.currentTarget.getAttribute('data-file')); });
+  }
+
+  document.getElementById('cad-open-diff').addEventListener('click', function () {
+    selectFile(state.file || DEFAULT_FILE);
+    if (drawer) {
+      drawer.open = true;
+      if (typeof drawer.scrollIntoView === 'function') { drawer.scrollIntoView({ block: 'nearest' }); }
+    }
+  });
+
+  document.getElementById('cad-refresh').addEventListener('click', function () {
+    log('手动刷新 · 重新同步服务端状态', 'act');
+    loadInfo();
+    loadJobs(true);
+  });
+  /* One detail action, shared verbatim: the header button and the external node
+     both open the job their dataset points at, exactly as before. */
+  function openLiveDetail(btn) {
+    state.graphId = btn.dataset.jobId || null;
+    openJobDetail(state.graphId);
+  }
+
+  /* A node of the main diagram reads the real record of the job it names, when it
+     names one. A child with no job_id has not started, so nothing is invented. */
+  function openJobDetail(id) {
+    state.selectedId = id || null;
+    renderAll(); saveUI(); ensureDetail(findJob(state.selectedId) || (id ? { job_id: id, detail_loaded: false } : null));
+    resMeta.scrollIntoView({ block: 'center' });
+  }
+
+  document.getElementById('cad-mcp-live').addEventListener('click', function () { openLiveDetail(this); });
+  document.getElementById('n-ext').addEventListener('click', function () { openLiveDetail(this); });
+  document.getElementById('lv-follow').addEventListener('click', function () {
+    state.graphId = null;
+    renderAll();
+    refreshLiveDetail();
+  });
+
+  /* One delegated listener for the whole diagram, so rebuilding a node never
+     leaves a stale handler behind. */
+  if (lvFlow) {
+    lvFlow.addEventListener('click', function (ev) {
+      var el = ev.target;
+      while (el && el !== lvFlow && !(el.getAttribute && el.getAttribute('data-lv') !== null)) { el = el.parentNode; }
+      if (!el || el === lvFlow) { return; }
+      var held = lvNodes[el.getAttribute('data-lv')];
+      if (!held) { return; }
+      if (!held.job) { msg('该节点没有 job_id：这项子任务尚未启动，读取不到真实记录。', 'warn'); return; }
+      openJobDetail(held.job);
+    });
+  }
+
+  if (viewToggle) {
+    viewToggle.addEventListener('click', function () {
+      state.view = (state.view === 'roles') ? 'live' : 'roles';
+      applyViewMode();
+      renderLive();
+      log(state.view === 'roles' ? '切换到拟议角色架构 / 手动调用图' : '切换到真实执行主图', 'act');
+    });
+  }
+
+  form.addEventListener('submit', function (ev) { ev.preventDefault(); doSubmit(); });
+  form.addEventListener('input', invalidateDraft);
+  form.addEventListener('change', invalidateDraft);
+
+  fGate.addEventListener('change', function () {
+    state.gate = fGate.value;
+    invalidateDraft();
+    renderSelection();
+    renderLive();
+    renderRuntime();
+    saveUI();
+  });
+
+  fCancel.addEventListener('click', cancelActive);
+  fRetry.addEventListener('click', sendRetry);
+
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) { loadInfo(); loadJobs(true); }
+  });
+
+  /* ================= init ================= */
+
+  loadUI();
+  selectFile(state.file || DEFAULT_FILE);
+  applyViewMode();
+  if (state.cwdPref) { fCwd.value = state.cwdPref; }
+  /* Start listening before the first load returns, so an idle console is
+     already polling for tasks started through another MCP client. */
+  syncPoll();
+
+  Promise.all([loadInfo(), loadJobs(true)]).then(function () {
+    renderAll();
+    var n = countActive();
+    log('app 就绪 · 服务端返回 ' + state.jobs.length + ' 条任务' + (n ? ('，其中 ' + n + ' 条运行中') : ''), 'act');
+  });
+
+  /* Local clocks only — never a server-side fabrication. */
+  window.setInterval(function () {
+    renderElapsed();
+    renderLive();
+  }, 1000);
+  window.setInterval(syncPoll, 5000);
+
+  if (typeof ResizeObserver === 'function') {
+    var ro = new ResizeObserver(function () { markNarrow(); });
+    ro.observe(root);
+    ro.observe(stage);
+  } else {
+    window.addEventListener('resize', markNarrow);
+  }
+  markNarrow();
+  window.requestAnimationFrame(draw);
+  window.setTimeout(draw, 120);
+})();
+</script>
+</body>
+</html>

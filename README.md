@@ -4,6 +4,26 @@ MCP server that lets **Codex delegate coding tasks to DeepSeek Harness (DSH)**.
 
 Codex plans and reviews; DSH does the file reading, editing, and checking.
 
+## Local visualization
+
+Run `npm run console`, then open `http://127.0.0.1:8787/`.
+The console lives in this project and connects to its existing stdio MCP
+server through the installed MCP SDK. It calls `dsh_start`, `dsh_list`,
+`dsh_get`, and `dsh_cancel`; it does not import the job executor directly.
+
+The page refreshes every eight seconds, including while idle, so tasks started
+by Codex through MCP appear automatically. Click the top **MCP 调用** status
+or a task row to view its returned result. External jobs and workflows are
+labelled as snapshots with an unknown role; they cannot be cancelled by this
+console because their creator belongs to another MCP process. Only jobs
+started by this console have cancel handles here. Worker models follow DSH's
+configuration, and the proposed Codex configuration diffs remain unapplied.
+
+Job snapshots use the shared `DSH_BRIDGE_STATE_DIR` (default: the OS temporary
+directory's `dsh-bridge`). Console-owned metadata lives in `.state/console`.
+If the MCP connection closes, restart the console; it never automatically
+retries an uncertain mutation. Run `npm run console:test` for its HTTP checks.
+
 -----
 
 ## Why this exists
